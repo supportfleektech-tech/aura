@@ -1,0 +1,13 @@
+# AURA OS — Litestream continuous SQLite replication (optional, off by default).
+# Enable: set AURA_LITESTREAM_REPLICA (and S3 creds) — the entrypoint then
+# restores on boot and runs `litestream replicate` around uvicorn.
+# Example replica URLs:
+#   s3://my-bucket/aura/aura.db            (AWS / R2 / MinIO via endpoint)
+#   file:///backup-replica/aura.db          (local second disk — testing)
+dbs:
+  - path: /data/aura.db
+    replicas:
+      - url: $AURA_LITESTREAM_REPLICA
+        sync-interval: 10s
+        retention: 72h
+        validation-interval: 1h

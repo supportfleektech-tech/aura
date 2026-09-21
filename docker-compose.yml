@@ -1,0 +1,40 @@
+services:
+  aura:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - aura-data:/data
+    environment:
+      AURA_DATA_DIR: /data
+      AURA_USER_NAME: Antony
+      # --- Litestream continuous replication (optional) ---
+      # AURA_LITESTREAM_REPLICA: s3://my-bucket/aura/aura.db
+      # AWS_ACCESS_KEY_ID: ...
+      # AWS_SECRET_ACCESS_KEY: ...
+      # AWS_REGION: us-east-1
+      # LITESTREAM_S3_ENDPOINT: https://... (R2/MinIO only)
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_CHAT_MODEL: llama3.1
+    restart: unless-stopped
+
+  # Local LFM (optional). Start with: docker compose --profile lfm up -d
+  # Pull once: docker compose exec ollama ollama pull llama3.1
+  ollama:
+    profiles: ["lfm"]
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    # Uncomment for NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  aura-data:
+  ollama-models:

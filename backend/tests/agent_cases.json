@@ -1,0 +1,514 @@
+{
+  "version": 1,
+  "cases": [
+   {
+    "id": "plan_day",
+    "turns": [
+     "plan my day"
+    ],
+    "expect": {
+     "intent": "plan_day",
+     "tools": [
+      "tasks.list",
+      "tasks.overdue",
+      "proactive.scan"
+     ],
+     "contains": [
+      "Here's your plan for today"
+     ]
+    }
+   },
+   {
+    "id": "attention",
+    "turns": [
+     "anything needing my attention"
+    ],
+    "expect": {
+     "intent": "plan_day",
+     "tools": [
+      "proactive.scan"
+     ],
+     "contains": [
+      "Here's your plan for today"
+     ]
+    }
+   },
+   {
+    "id": "task_create",
+    "turns": [
+     "remind me to call EvalCorp"
+    ],
+    "expect": {
+     "intent": "task_create",
+     "tools": [
+      "__create_task_from_text__"
+     ],
+     "contains": [
+      "call EvalCorp"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM tasks WHERE title LIKE '%call EvalCorp%'",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "task_toggle",
+    "turns": [
+     "complete task Eval report"
+    ],
+    "expect": {
+     "intent": "task_toggle",
+     "contains": [
+      "Eval report"
+     ],
+     "db": [
+      {
+       "sql": "SELECT status s FROM tasks WHERE title='Eval report'",
+       "col": "s",
+       "want": "completed"
+      }
+     ]
+    }
+   },
+   {
+    "id": "task_list",
+    "turns": [
+     "list my tasks"
+    ],
+    "expect": {
+     "intent": "task_list",
+     "tools": [
+      "tasks.list"
+     ],
+     "contains": [
+      "Eval report",
+      "Eval overdue filing"
+     ]
+    }
+   },
+   {
+    "id": "undo",
+    "turns": [
+     "add task eval temporary thing",
+     "undo that"
+    ],
+    "expect": {
+     "intent": "undo",
+     "tools": [
+      "system.undo"
+     ],
+     "contains": [
+      "Nothing to undo"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM tasks WHERE title LIKE '%temporary thing%'",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "undo_empty",
+    "turns": [
+     "undo that"
+    ],
+    "expect": {
+     "intent": "undo",
+     "contains": [
+      "Nothing to undo"
+     ]
+    }
+   },
+   {
+    "id": "memory_store",
+    "turns": [
+     "remember that the eval satellite codename is BlueKite"
+    ],
+    "expect": {
+     "intent": "memory_store",
+     "contains": [
+      "Saved to memory"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM memories WHERE content LIKE '%BlueKite%' AND deleted_at IS NULL",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "memory_search",
+    "turns": [
+     "do you remember the eval satellite codename"
+    ],
+    "expect": {
+     "intent": "memory_search",
+     "tools": [
+      "memory.search"
+     ],
+     "contains": [
+      "BlueKite"
+     ]
+    }
+   },
+   {
+    "id": "client_review",
+    "turns": [
+     "review my clients"
+    ],
+    "expect": {
+     "intent": "client_review",
+     "contains": [
+      "EvalPortal"
+     ]
+    }
+   },
+   {
+    "id": "project_status",
+    "turns": [
+     "project status"
+    ],
+    "expect": {
+     "intent": "project_status",
+     "contains": [
+      "EvalPortal"
+     ]
+    }
+   },
+   {
+    "id": "project_create",
+    "turns": [
+     "new project EvalRocket"
+    ],
+    "expect": {
+     "intent": "project_create",
+     "contains": [
+      "Created project **EvalRocket**"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM projects WHERE name='EvalRocket'",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "client_create",
+    "turns": [
+     "add client EvalNew"
+    ],
+    "expect": {
+     "intent": "client_create",
+     "contains": [
+      "Added client **EvalNew**"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM clients WHERE name='EvalNew'",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "system_status",
+    "turns": [
+     "system status"
+    ],
+    "expect": {
+     "intent": "system_status",
+     "tools": [
+      "system.status"
+     ],
+     "contains": [
+      "System status"
+     ]
+    }
+   },
+   {
+    "id": "automation",
+    "turns": [
+     "list automations"
+    ],
+    "expect": {
+     "intent": "automation",
+     "contains": [
+      "Eval morning nudge"
+     ]
+    }
+   },
+   {
+    "id": "calendar_today",
+    "turns": [
+     "my schedule"
+    ],
+    "expect": {
+     "intent": "calendar_today",
+     "tools": [
+      "calendar.today"
+     ],
+     "contains": [
+      "Eval standup"
+     ]
+    }
+   },
+   {
+    "id": "calendar_create",
+    "turns": [
+     "schedule dentist tomorrow at 9am"
+    ],
+    "expect": {
+     "intent": "calendar_create",
+     "contains": [
+      "Scheduled"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM events WHERE title LIKE '%entist%'",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "finance",
+    "turns": [
+     "spent 500 on lunch"
+    ],
+    "expect": {
+     "intent": "finance",
+     "contains": [
+      "KES 500"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM expenses WHERE amount=500",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "journal",
+    "turns": [
+     "journal: eval day one"
+    ],
+    "expect": {
+     "intent": "journal",
+     "contains": [
+      "Journaled"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM journal WHERE body LIKE '%eval day one%'",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "sleep",
+    "turns": [
+     "slept 11pm to 6am"
+    ],
+    "expect": {
+     "intent": "sleep_log",
+     "contains": [
+      "7.0h"
+     ],
+     "db": [
+      {
+       "sql": "SELECT COUNT(*) n FROM sleep_logs",
+       "col": "n",
+       "want": 1
+      }
+     ]
+    }
+   },
+   {
+    "id": "mood",
+    "turns": [
+     "log mood 8"
+    ],
+    "expect": {
+     "intent": "health_log",
+     "contains": [
+      "Logged"
+     ]
+    }
+   },
+   {
+    "id": "email",
+    "turns": [
+     "check my email"
+    ],
+    "expect": {
+     "intent": "email_check",
+     "tools": [
+      "email.sync",
+      "email.triage",
+      "email.unread"
+     ],
+     "contains": [
+      "unread"
+     ]
+    }
+   },
+   {
+    "id": "help",
+    "turns": [
+     "help"
+    ],
+    "expect": {
+     "intent": "help",
+     "contains": [
+      "Things I can do"
+     ],
+     "ground_min": 0
+    }
+   },
+   {
+    "id": "greet",
+    "turns": [
+     "hello"
+    ],
+    "expect": {
+     "intent": "greet",
+     "contains": [
+      "Hello!"
+     ],
+     "ground_min": 0
+    }
+   },
+   {
+    "id": "continuity",
+    "turns": [
+     "my focus project is EvalPortal",
+     "so what is my next move on it"
+    ],
+    "expect": {
+     "intent": "general_ask",
+     "contains": [
+      "EvalPortal"
+     ],
+     "not": [
+      "I've noted that"
+     ]
+    }
+   },
+   {
+    "id": "compaction",
+    "turns": [
+     "eval hello again"
+    ],
+    "seed_messages": 32,
+    "expect": {
+     "intent": "general_ask",
+     "db": [
+      {
+       "sql": "SELECT (summary <> '') s FROM sessions WHERE title LIKE 'T-EvalConv%'",
+       "col": "s",
+       "want": 1
+      }
+     ]
+    }
+   },
+    {
+     "id": "grounded_memory_recall_after_store",
+     "turns": ["remember that the observatory access phrase is CopperHeron", "recall the observatory access phrase"],
+     "expect": {
+      "intent": "memory_search",
+      "tools": ["memory.search"],
+      "contains": ["CopperHeron"],
+      "not": ["SilverHeron"],
+      "ground_min": 1.0,
+      "db": [{"sql": "SELECT COUNT(*) n FROM memories WHERE content LIKE '%CopperHeron%' AND deleted_at IS NULL", "col": "n", "want": 1}]
+     }
+    },
+    {
+     "id": "negated_fact_preserved_in_memory",
+     "turns": ["remember that the observatory is not open on Sundays", "recall the observatory opening days"],
+     "expect": {
+      "intent": "memory_search",
+      "tools": ["memory.search"],
+      "contains": ["observatory is not open on Sundays"],
+      "not": ["observatory is open on Sundays"],
+      "ground_min": 1.0,
+      "db": [{"sql": "SELECT COUNT(*) n FROM memories WHERE content='the observatory is not open on Sundays' AND deleted_at IS NULL", "col": "n", "want": 1}]
+     }
+    },
+    {
+     "id": "negative_reminder_idiom_stores_fact",
+     "turns": ["don't forget the telescope locker combination is violet amber"],
+     "expect": {
+      "intent": "memory_store",
+      "contains": ["Saved to memory"],
+      "db": [{"sql": "SELECT COUNT(*) n FROM memories WHERE content='the telescope locker combination is violet amber' AND deleted_at IS NULL", "col": "n", "want": 1}]
+     }
+    },
+    {
+     "id": "read_tasks_without_mutation",
+     "turns": ["list my tasks, do not change them"],
+     "expect": {
+      "intent": "task_list",
+      "tools": ["tasks.list"],
+      "contains": ["Eval report", "Eval overdue filing"],
+      "ground_min": 1.0,
+      "db": [{"sql": "SELECT COUNT(*) n FROM tasks WHERE status='open'", "col": "n", "want": 2}, {"sql": "SELECT COUNT(*) n FROM write_journal", "col": "n", "want": 0}]
+     }
+    },
+    {
+     "id": "ambiguous_sleep_requires_times",
+     "turns": ["log my sleep"],
+     "expect": {
+      "intent": "sleep_log",
+      "tools": ["__log_sleep_from_text__"],
+      "contains": ["How long did you sleep?"],
+      "ground_min": 0,
+      "not": ["Logged"],
+      "db": [{"sql": "SELECT COUNT(*) n FROM sleep_logs", "col": "n", "want": 0}]
+     }
+    },
+    {
+     "id": "unknown_task_does_not_complete_another",
+     "turns": ["complete task UnlistedZebra"],
+     "expect": {
+      "intent": "task_toggle",
+      "tools": ["__toggle_task_from_text__"],
+      "contains": ["couldn't find an open task matching that"],
+      "not": ["Marked"],
+      "db": [{"sql": "SELECT COUNT(*) n FROM tasks WHERE status='open'", "col": "n", "want": 2}, {"sql": "SELECT COUNT(*) n FROM write_journal", "col": "n", "want": 0}]
+     }
+    },
+    {
+     "id": "briefing",
+     "turns": [
+      "brief me"
+     ],
+     "expect": {
+      "intent": "briefing",
+      "tools": [
+       "briefing.now"
+      ],
+      "contains": [
+       "Eval overdue filing",
+       "Eval standup"
+      ]
+     }
+    }
+  ]
+}

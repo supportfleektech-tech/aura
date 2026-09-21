@@ -1,0 +1,9 @@
+# Optional server-side voice (STT/TTS). AURA works without these via browser voice.
+# First use downloads models (~150MB whisper + ~60MB piper voice; edge TTS needs no model) to ~/.cache.
+faster-whisper>=1.0
+piper-tts>=1.2
+edge-tts>=7.0
+openwakeword>=0.4
+kokoro-onnx==0.6.1
+# Kokoro also needs a one-time model fetch (explicit, checksummed, offline afterwards):
+#   venv/bin/python scripts/download_kokoro.py

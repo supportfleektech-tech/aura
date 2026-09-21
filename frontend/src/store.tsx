@@ -1,0 +1,368 @@
+/* AURA OS global store — view routing, data, chat, orb state, voice, toasts. */
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { api, chatStream, ChatMsg, Dashboard, OrbState, PlanStep, uid } from "./api";
+import { createApprovalAlerts, playAlertSound } from "./alerts";
+import { getServer, loadServerSettings, voicePreferenceKey } from "./prefs";
+
+export type View = "home" | "career" | "clients" | "personal" | "inbox" | "calendar" | "memory" | "sessions" | "voice" | "gateway" | "automations" | "activity" | "analytics" | "smarthome" | "files" | "models" | "terminal" | "feeds" | "settings";
+
+interface Toast { id: string; text: string; kind: "info" | "success" | "warn" | "error" }
+
+interface Store {
+  view: View; setView: (v: View) => void;
+  me: { name: string; role: string; location: string; version?: string } | null;
+  dash: Dashboard | null; online: boolean; lfm: string;
+  refresh: () => Promise<void>;
+  orb: OrbState; setOrb: (s: OrbState) => void;
+  msgs: ChatMsg[]; sending: boolean; sessionId: string | null;
+  send: (text: string, attachments?: unknown[]) => Promise<void>;
+  newChat: () => void;
+  loadSession: (sid: string) => Promise<void>;
+  palette: boolean; setPalette: (b: boolean) => void;
+  toasts: Toast[]; toast: (text: string, kind?: Toast["kind"]) => void;
+  listening: boolean; toggleListen: (onSend?: (t: string) => void) => void; transcript: string;
+  speak: (text: string, onComplete?: () => void) => void; speaking: boolean; stopSpeak: () => void; stopGenerating: () => void;
+  micLevel: React.MutableRefObject<number>;
+  pendingApprovals: number;
+  call: boolean; setCall: (b: boolean) => void;
+  composerFocus: number; requestComposerFocus: () => void;
+}
+
+const Ctx = createContext<Store>(null as unknown as Store);
+export const useStore = () => useContext(Ctx);
+
+const GREETINGS: Record<string, string[]> = {
+  morning: ["Good morning", "Top of the morning"],
+  afternoon: ["Good afternoon"],
+  evening: ["Good evening"],
+};
+const GREETINGS_SW: Record<string, string[]> = {
+  morning: ["Habari za asubuhi", "Amka salama"],
+  afternoon: ["Habari za mchana"],
+  evening: ["Habari za jioni"],
+};
+export const daypart = () => {
+  const h = parseInt(new Intl.DateTimeFormat("en", { hour: "numeric", hour12: false, timeZone: "Africa/Nairobi" }).format(new Date()), 10);
+  return h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
+};
+export const greetWord = (lang = "en") => {
+  const p = daypart();
+  const arr = (lang === "sw" ? GREETINGS_SW : GREETINGS)[p];
+  return arr[Math.floor(Math.random() * arr.length)];
+};
+
+export function StoreProvider({ children }: { children: React.ReactNode }) {
+  const [view, setView] = useState<View>("home");
+  const [me, setMe] = useState<Store["me"]>(null);
+  const [dash, setDash] = useState<Dashboard | null>(null);
+  const [online, setOnline] = useState(true);
+  const [lfm, setLfm] = useState("checking…");
+  const [orb, setOrbState] = useState<OrbState>("idle");
+  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
+  const [sending, setSending] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [palette, setPalette] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [speaking, setSpeaking] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
+  const [call, setCall] = useState(false);
+  const [composerFocus, setComposerFocus] = useState(0);
+  const micLevel = useRef(0);
+  const recRef = useRef<{ stop: () => void } | null>(null);
+  const orbTimer = useRef<number>(0);
+  const chatAbortRef = useRef<AbortController | null>(null);
+
+  const toast = useCallback((text: string, kind: Toast["kind"] = "info") => {
+    const id = uid();
+    setToasts((t) => [...t.slice(-4), { id, text, kind }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), getServer("toast_duration_ms", 4200));
+    if (kind === "error") void playAlertSound();
+  }, []);
+
+  const updateApprovalAlerts = useRef(createApprovalAlerts());
+
+  const setOrb = useCallback((s: OrbState) => {
+    setOrbState(s);
+    window.clearTimeout(orbTimer.current);
+    if (s === "success" || s === "error" || s === "warning") {
+      orbTimer.current = window.setTimeout(() => setOrbState((cur) => (cur === s ? "idle" : cur)), 2600);
+    }
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [m, d, h, ap] = await Promise.all([api.me.get(), api.dashboard(), api.health(), api.approvals.list()]);
+      setMe(m); setDash(d); setOnline(true);
+      const l = h.services.find((s) => s.name === "Local LFM");
+      setLfm(l?.status === "online" ? "Local LFM Online" : "Builtin Engine · LFM Standby");
+      setPendingApprovals(ap.approvals.length);
+      updateApprovalAlerts.current(ap.approvals.map((a) => a.id));
+    } catch {
+      setOnline(false);
+      setOrb("offline");
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    loadServerSettings().catch(() => undefined);
+    const t = setInterval(refresh, 30000);
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((p) => !p); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => { clearInterval(t); window.removeEventListener("keydown", onKey); };
+  }, [refresh]);
+
+  /* ---------------- voice (browser + server engines) ---------------- */
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const speakAbortRef = useRef<AbortController | null>(null);
+  const speakGenRef = useRef(0);
+  const speakUrlRef = useRef<string | null>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const releaseSpeech = useCallback(() => {
+    const a = audioRef.current;
+    audioRef.current = null;
+    if (a) {
+      a.onended = null; a.onerror = null;
+      try { a.pause(); a.removeAttribute("src"); a.load(); } catch {}
+    }
+    if (speakUrlRef.current) URL.revokeObjectURL(speakUrlRef.current);
+    speakUrlRef.current = null;
+    if (utteranceRef.current) { utteranceRef.current.onend = null; utteranceRef.current.onerror = null; }
+    utteranceRef.current = null;
+  }, []);
+  const stopSpeak = useCallback(() => {
+    speakGenRef.current += 1;
+    speakAbortRef.current?.abort();
+    speakAbortRef.current = null;
+    releaseSpeech();
+    try { speechSynthesis.cancel(); } catch {}
+    setSpeaking(false);
+  }, [releaseSpeech]);
+  useEffect(() => () => stopSpeak(), [stopSpeak]);
+
+  const stopGenerating = useCallback(() => {
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    setSending(false);
+    setOrb("idle");
+  }, []);
+
+  const VOICE_EMO: Record<string, { rate: number; pitch: number }> = {
+    neutral: { rate: 1, pitch: 1 }, cheerful: { rate: 1.1, pitch: 1.15 }, calm: { rate: 0.88, pitch: 0.9 },
+    excited: { rate: 1.15, pitch: 1.25 }, serious: { rate: 0.95, pitch: 0.85 }, sad: { rate: 0.88, pitch: 0.85 },
+  };
+
+  const speak = useCallback((text: string, onComplete?: () => void) => {
+    stopSpeak();
+    const generation = speakGenRef.current;
+    let finished = false;
+    const current = () => generation === speakGenRef.current && !finished;
+    const finish = () => {
+      if (!current()) return;
+      finished = true;
+      speakAbortRef.current = null;
+      releaseSpeech();
+      setSpeaking(false);
+      onComplete?.();
+    };
+    try {
+      const clean = text.replace(/[*#>`]/g, "").replace(/\[.*?\]/g, "").replace(/\n+/g, ". ").slice(0, 1500);
+      if (!clean.trim()) { finish(); return; }
+      const engine = String(getServer("voice_engine", "browser"));
+      const emo = VOICE_EMO[String(getServer("voice_emotion", "neutral"))] || VOICE_EMO.neutral;
+      if (engine === "piper" || engine === "edge" || engine === "kokoro") {
+        setSpeaking(true);
+        const vkey = voicePreferenceKey(engine);
+        const controller = new AbortController();
+        speakAbortRef.current = controller;
+        api.voice.speakUrl(clean, { engine, emotion: String(getServer("voice_emotion", "neutral")), voice: String(getServer(vkey, "")) || undefined }, controller.signal)
+          .then((url) => {
+            if (!current()) { URL.revokeObjectURL(url); return; }
+            speakUrlRef.current = url;
+            const a = new Audio(url);
+            audioRef.current = a;
+            a.onended = finish;
+            a.onerror = finish;
+            return a.play();
+          })
+          .catch((e) => { if (!current()) return; finish(); toast(`Voice: ${e instanceof Error ? e.message : e}`, "error"); });
+        return;
+      }
+      if (!("speechSynthesis" in window)) { toast("TTS not supported in this browser", "warn"); finish(); return; }
+      const u = new SpeechSynthesisUtterance(clean);
+      const ur = Number(getServer("voice_rate", 1.0)), up = Number(getServer("voice_pitch", 1.0));
+      u.rate = Math.min(2, Math.max(0.5, emo.rate * ur));
+      u.pitch = Math.min(2, Math.max(0, emo.pitch + (up - 1)));
+      u.lang = String(getServer("voice_lang", "en-KE"));
+      const want = String(getServer("voice_browser_name", ""));
+      if (want) {
+        try {
+          const vs = speechSynthesis.getVoices();
+          const hit = vs.find((x) => x.name === want) || vs.find((x) => x.name.toLowerCase().includes(want.toLowerCase()));
+          if (hit) u.voice = hit;
+        } catch { /* noop */ }
+      }
+      u.onend = finish;
+      u.onerror = finish;
+      utteranceRef.current = u;
+      setSpeaking(true);
+      speechSynthesis.speak(u);
+    } catch { finish(); }
+  }, [stopSpeak, toast, releaseSpeech]);
+
+  const speakRef = useRef<((t: string) => void) | null>(null);
+  useEffect(() => { speakRef.current = speak; }, [speak]);
+
+  /* ---------------- chat ---------------- */
+  const requestComposerFocus = useCallback(() => {
+    setComposerFocus((n) => n + 1);
+    setView("home");
+  }, []);
+
+  const send = useCallback(async (text: string, attachments: unknown[] = []) => {
+    const clean = text.trim();
+    if (!clean && attachments.length === 0) return;
+    if (!online) { toast("Backend offline — running in local mode", "warn"); }
+    const um: ChatMsg = { id: uid(), role: "user", text: clean, ts: Date.now(),
+      files: (attachments as { id?: number; name?: string }[]).filter((a) => a && typeof a.id === "number")
+        .map((a) => ({ id: a.id as number, name: String(a.name || `#${a.id}`) })) };
+    const aid = uid();
+    const am: ChatMsg = { id: aid, role: "assistant", text: "", ts: Date.now(), steps: [] };
+    setMsgs((m) => [...m, um, am]);
+    setSending(true);
+    setOrb("thinking");
+    let acc = "";
+    const patch = (p: Partial<ChatMsg>) => setMsgs((ms) => ms.map((m) => (m.id === aid ? { ...m, ...p } : m)));
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+    try {
+      await chatStream(clean, sessionId, {
+        onOrb: (s) => setOrb(s),
+        onPlan: (p) => { patch({ steps: p.steps }); setSessionId(p.session_id); },
+        onStep: (s) => setMsgs((ms) => ms.map((m) => m.id === aid
+          ? { ...m, steps: (m.steps || []).map((x) => (x.id === s.id ? { ...x, status: s.status } : x)) } : m)),
+        onToken: (t) => { acc += t; if (getServer("chat_streaming", true)) patch({ text: acc }); },
+        onApproval: (a) => { if (a) updateApprovalAlerts.current([a.id]); patch({ approval: a || undefined }); },
+        onResult: (r) => {
+          acc = r.text;
+          if (r.approval) updateApprovalAlerts.current([r.approval.id]);
+          patch({ text: r.text, memories: r.memories_used || [], approval: r.approval || undefined, model: r.model });
+          if (getServer("voice_autoplay", false) && r.text.trim()) speakRef.current?.(r.text);
+        },
+        onMemory: (m) => { if (m.stored?.length) toast(`Saved to memory: ${m.stored[0].title.slice(0, 60)}`, "success"); },
+        onVision: (v) => setMsgs((ms) => ms.map((m) => m.id === aid
+          ? { ...m, vision: [...(m.vision || []).filter((x) => x.file !== v.file), v] } : m)),
+        onMission: (mv) => setMsgs((ms) => ms.map((m) => m.id === aid
+          ? { ...m, missions: [...(m.missions || []).filter((x) => x.id !== mv.id), mv] } : m)),
+        onDone: () => { setSending(false); setOrb("success"); refresh(); },
+      }, attachments, controller.signal);
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      patch({ role: "error", text: `I couldn't reach the AURA backend. ${String(e).slice(0, 120)}` });
+      setSending(false);
+      setOrb("error");
+    } finally {
+      chatAbortRef.current = null;
+    }
+  }, [online, sessionId, refresh, setOrb, toast]);
+
+  const newChat = useCallback(() => {
+    setMsgs([]);
+    setSessionId(null);
+    setOrb("idle");
+  }, [setOrb]);
+
+  const loadSession = useCallback(async (sid: string) => {
+    try {
+      const r = await api.sessions.get(sid);
+      setMsgs(r.messages.map((m) => ({
+        id: uid(), role: (m.role === "user" ? "user" : "assistant") as ChatMsg["role"],
+        text: m.content, ts: Date.now(),
+      })));
+      setSessionId(sid);
+      setView("home");
+      toast("Conversation loaded", "info");
+    } catch {
+      toast("Could not load conversation", "error");
+    }
+  }, [toast]);
+
+  const toggleListen = useCallback((onSend?: (t: string) => void) => {
+    if (listening) {
+      recRef.current?.stop();
+      setListening(false);
+      setOrb("idle");
+      return;
+    }
+    const SR = (window as unknown as { SpeechRecognition?: new () => WebRec; webkitSpeechRecognition?: new () => WebRec }).SpeechRecognition
+      || (window as unknown as { webkitSpeechRecognition?: new () => WebRec }).webkitSpeechRecognition;
+    if (!SR) { toast("Speech recognition not supported in this browser — type instead", "warn"); return; }
+    try {
+      const rec: WebRec = new SR();
+      rec.lang = getServer("voice_lang", "en-KE");
+      rec.interimResults = true;
+      rec.continuous = false;
+      let final = "";
+      rec.onresult = (e: { results: { isFinal: boolean; [i: number]: { transcript: string } }[] }) => {
+        let interim = "";
+        for (const r of e.results) { if (r.isFinal) final += r[0].transcript; else interim += r[0].transcript; }
+        setTranscript(final + interim);
+      };
+      rec.onend = () => {
+        recRef.current = null;
+        setListening(false);
+        setOrb("idle");
+        const t = final.trim();
+        setTranscript("");
+        if (t) { api.voice.log(t).catch(() => undefined); (onSend || send)(t); }
+      };
+      rec.onerror = () => { recRef.current = null; setListening(false); setOrb("idle"); };
+      recRef.current = rec;
+      rec.start();
+      setListening(true);
+      setOrb("listening");
+      // mic level meter
+      navigator.mediaDevices?.getUserMedia({ audio: true }).then((stream) => {
+        const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (!AC) return;
+        const ac = new AC();
+        const src = ac.createMediaStreamSource(stream);
+        const an = ac.createAnalyser();
+        an.fftSize = 256;
+        src.connect(an);
+        const arr = new Uint8Array(an.frequencyBinCount);
+        const tick = () => {
+          if (!recRef.current) { stream.getTracks().forEach((t) => t.stop()); ac.close().catch(() => undefined); return; }
+          an.getByteFrequencyData(arr);
+          micLevel.current = arr.reduce((a, b) => a + b, 0) / arr.length / 255;
+          requestAnimationFrame(tick);
+        };
+        tick();
+      }).catch(() => undefined);
+    } catch { toast("Could not start microphone", "error"); }
+  }, [listening, send, setOrb, toast]);
+
+  useEffect(() => () => { recRef.current = null; try { speechSynthesis.cancel(); } catch { /* noop */ } }, []);
+
+  return (
+    <Ctx.Provider value={{
+      view, setView, me, dash, online, lfm, refresh, orb, setOrb, msgs, sending, sessionId,
+      send, newChat, loadSession, palette, setPalette, toasts, toast, listening, toggleListen, transcript,
+      speak, speaking, stopSpeak, stopGenerating, micLevel, pendingApprovals, call, setCall,
+      composerFocus, requestComposerFocus,
+    }}>
+      {children}
+    </Ctx.Provider>
+  );
+}
+
+interface WebRec {
+  lang: string; interimResults: boolean; continuous: boolean;
+  onresult: ((e: { results: { isFinal: boolean; [i: number]: { transcript: string } }[] }) => void) | null;
+  onend: (() => void) | null; onerror: (() => void) | null;
+  start: () => void; stop: () => void;
+}

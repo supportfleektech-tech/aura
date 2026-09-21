@@ -1,0 +1,396 @@
+{
+  "cases": {
+    "automation": [
+      "automatic reports",
+      "create automation",
+      "cron job status",
+      "every morning briefing",
+      "list automations",
+      "recurring reminder",
+      "run every day at 8am",
+      "schedule daily backup"
+    ],
+    "backup_run": [
+      "backup now",
+      "backups",
+      "do a backup",
+      "make a backup",
+      "run backup",
+      "start backup",
+      "take a backup",
+      "trigger backup"
+    ],
+    "client_create": [
+      "add a new client",
+      "add client",
+      "add client Acme Corp",
+      "add new client",
+      "create a client",
+      "create client John",
+      "new client Acme",
+      "new client for Q3"
+    ],
+    "client_review": [
+      "client project review",
+      "client workload",
+      "follow up with clients",
+      "my clients",
+      "overdue client work",
+      "review client work",
+      "review my clients",
+      "show overdue client work"
+    ],
+    "finance": [
+      "add expense 1500 food",
+      "cost of groceries",
+      "finance summary",
+      "how much did I spend",
+      "my budget",
+      "my spending this month",
+      "paid rent today",
+      "spent 500 on lunch"
+    ],
+    "followup_draft": [
+      "draft emails to clients",
+      "draft follow-up messages",
+      "draft followups",
+      "prepare follow-up messages for clients",
+      "prepare follow-ups for overdue",
+      "send follow up messages",
+      "write a follow-up message",
+      "write followup emails"
+    ],
+    "gateway": [
+      "connect my email",
+      "connect telegram",
+      "discord integration",
+      "email settings",
+      "gateway status",
+      "slack status",
+      "telegram setup",
+      "whatsapp connect"
+    ],
+    "general_ask": [
+      "explain quantum computing",
+      "explain taxes simply",
+      "is it going to rain",
+      "tell me a joke",
+      "what do you think about AI",
+      "what is the capital of Kenya",
+      "who won the match",
+      "write a poem"
+    ],
+    "greet": [
+      "good afternoon",
+      "good evening",
+      "good morning",
+      "habari",
+      "hello",
+      "hey",
+      "hi",
+      "mambo"
+    ],
+    "health_log": [
+      "i feel great",
+      "i feel tired",
+      "log mood 8",
+      "log my health",
+      "log weight 70kg",
+      "mood 7 today",
+      "track water intake",
+      "track workout"
+    ],
+    "help": [
+      "commands",
+      "help",
+      "help me",
+      "I need help",
+      "list capabilities",
+      "show commands",
+      "what are your capabilities",
+      "what can you do"
+    ],
+    "interview_prep": [
+      "common interview questions",
+      "interview prep",
+      "mock interview",
+      "practice for my interview",
+      "practice interview questions",
+      "prepare for interview",
+      "question bank",
+      "tomorrow's interview"
+    ],
+    "journal": [
+      "add journal entry",
+      "dear diary",
+      "journal my thoughts",
+      "journal: today was good",
+      "open my journal",
+      "reflect on today",
+      "reflection time",
+      "write in my journal"
+    ],
+    "meeting_prep": [
+      "call about the launch",
+      "call with client about launch",
+      "meeting agenda for Monday",
+      "meeting notes for Friday",
+      "meeting with Sarah tomorrow",
+      "prep for meeting with John",
+      "prep me for the client call",
+      "prepare for my call with Jane"
+    ],
+    "memory_search": [
+      "did I forget anything",
+      "do you remember my codename",
+      "recall my preferences",
+      "remember my meeting",
+      "search my memory",
+      "show my memories",
+      "what did I ask you to remember",
+      "what do you know about me"
+    ],
+    "memory_store": [
+      "don't forget the meeting Friday",
+      "don't forget to water plants",
+      "keep in mind I hate Mondays",
+      "note that John prefers email",
+      "note that rent is due",
+      "remember that my license expires soon",
+      "remember that the satellite codename is BlueKite",
+      "save this idea"
+    ],
+    "plan_day": [
+      "daily brief",
+      "morning brief",
+      "my day",
+      "plan my day",
+      "prioritis my day",
+      "prioritize my tasks",
+      "today's plan",
+      "what's my day look like",
+      "what needs my attention today",
+      "show me what needs attention",
+      "any risks I should know about",
+      "what are the risks this week",
+      "anything needing my attention"
+    ],
+    "project_create": [
+      "create a project",
+      "create project Website Redesign",
+      "new client project",
+      "new project for Acme",
+      "new project TestVoyager",
+      "open a new project",
+      "start a new project",
+      "start project Phoenix"
+    ],
+    "project_status": [
+      "any deadlines",
+      "check progress",
+      "deadline check",
+      "how are my projects",
+      "milestone update",
+      "project progress",
+      "project status",
+      "show milestones"
+    ],
+    "resume_help": [
+      "ats score for my resume",
+      "check my resume",
+      "cv feedback",
+      "improve my cv",
+      "match this job description",
+      "my application status",
+      "rate my cv",
+      "write a cover letter"
+    ],
+    "sleep_log": [
+      "i slept 8 hours",
+      "log my sleep",
+      "log sleep 7 hours",
+      "sleep 7.5 hours last night",
+      "sleep log for last night",
+      "slept 11pm to 6am",
+      "slept from 10pm to 5am",
+      "track my sleep"
+    ],
+    "system_status": [
+      "are you healthy",
+      "backup status",
+      "diagnostics",
+      "health check",
+      "server status",
+      "services status",
+      "status report",
+      "system status"
+    ],
+    "task_create": [
+      "add a reminder to stretch",
+      "add task buy milk",
+      "create a task to call mom",
+      "create new task for Monday",
+      "new todo fix bug",
+      "remind me to drink water",
+      "task: review PR",
+      "todo: write docs"
+    ],
+    "task_list": [
+      "all tasks",
+      "list my tasks",
+      "my tasks",
+      "pending todos",
+      "show open tasks",
+      "what is due",
+      "what is next",
+      "what's on today"
+    ],
+    "task_toggle": [
+      "complete task 3",
+      "done with my report",
+      "finish task 2",
+      "finish the task",
+      "mark call mom completed",
+      "mark task 5 as done",
+      "mark task as in progress",
+      "mark the report done"
+    ],
+    "voice_note": [
+      "enable voice",
+      "pronounce Nairobi",
+      "say hello",
+      "speak the result",
+      "speak up",
+      "tts test",
+      "use your voice",
+      "voice note"
+    ],
+    "email_check": [
+      "check email",
+      "check my inbox",
+      "any new mail",
+      "unread emails",
+      "triage my inbox",
+      "read my mail",
+      "show unread mail",
+      "inbox zero"
+    ],
+    "calendar_today": [
+      "my schedule",
+      "today's schedule",
+      "meetings today",
+      "today's meetings",
+      "any meetings",
+      "what meetings do i have",
+      "on my calendar",
+      "my agenda"
+    ],
+    "calendar_create": [
+      "schedule lunch friday 1pm",
+      "book a call tomorrow",
+      "add lunch with sarah friday",
+      "create an event for demo day",
+      "schedule a meeting with john",
+      "set up a call monday 10am",
+      "book dentist appointment",
+      "schedule sync tomorrow 2pm"
+    ],
+    "briefing": [
+      "brief me",
+      "evening briefing",
+      "evening brief",
+      "weekly review",
+      "shutdown review",
+      "daily digest",
+      "my briefing",
+      "generate a briefing"
+    ],
+    "undo": [
+      "undo",
+      "undo that",
+      "undo my last change",
+      "undo that change"
+    ],
+    "web_search": [
+      "search the web for cheap flights",
+      "google it best laptops",
+      "look up current weather online",
+      "find best restaurants online",
+      "web search for nairobi news",
+      "query the internet for exchange rates"
+    ],
+    "mission_status": [
+      "how are my missions going",
+      "mission status",
+      "mission status please",
+      "update on my missions",
+      "are my missions running",
+      "mission progress",
+      "check my missions"
+    ],
+    "terminal_run": [
+      "run `git status` in the terminal",
+      "execute the command: ls -la ~/projects",
+      "run this command on my machine: df -h",
+      "in my terminal, run ollama list",
+      "terminal: uptime",
+      "run the backup script on the shell",
+      "ssh to buildbox and run make test",
+      "can you run nproc on my machines?"
+    ],
+    "ollama_models": [
+      "which models do I have in ollama?",
+      "list my local models",
+      "ollama status",
+      "what models are on my pc?",
+      "how big is my model room?",
+      "sync ollama models"
+    ],
+    "ollama_switch": [
+      "switch to llama3.1",
+      "set the ollama model to qwen2.5",
+      "change local model to mistral",
+      "point aura at gemma3 for chat",
+      "use the model deepseek-r1"
+    ],
+    "feeds_latest": [
+      "what's on my feeds?",
+      "any new rss items?",
+      "check my feeds",
+      "news digest please",
+      "latest feed items"
+    ],
+    "feed_follow": [
+      "follow my rss feed https://news.ycombinator.com/rss",
+      "follow this feed https://feeds.bbci.co.uk/news/rss.xml",
+      "add an rss feed: https://lobste.rs/rss",
+      "please follow the feed at https://hnrss.org/frontpage"
+    ],
+    "weather": [
+      "what's the weather?",
+      "do I need an umbrella today?",
+      "is it raining?",
+      "weekend forecast",
+      "how hot is it outside",
+      "temperature right now?"
+    ]
+  },
+  "domain_spots": [
+    {
+      "domain": "career",
+      "intent": "general_ask",
+      "text": "how is my career growth"
+    },
+    {
+      "domain": "personal",
+      "intent": "general_ask",
+      "text": "how to meditate daily"
+    },
+    {
+      "domain": "clients",
+      "intent": "general_ask",
+      "text": "invoice wording advice"
+    }
+  ],
+  "version": 1
+}
