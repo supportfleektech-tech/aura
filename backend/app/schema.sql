@@ -259,6 +259,21 @@ CREATE TABLE IF NOT EXISTS activity (
 );
 CREATE INDEX IF NOT EXISTS idx_activity_time ON activity(id DESC);
 
+-- Canonical inbound/outbound gateway event stream (telegram|discord|slack|whatsapp|email).
+-- `activity` remains the human-readable audit log; this is the queryable feed.
+CREATE TABLE IF NOT EXISTS gateway_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 1,
+  platform TEXT NOT NULL,
+  actor TEXT NOT NULL DEFAULT 'aura',   -- aura|user
+  direction TEXT NOT NULL DEFAULT 'out', -- in|out
+  text TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_gateway_events_time ON gateway_events(id DESC);
+CREATE INDEX IF NOT EXISTS idx_gateway_events_platform ON gateway_events(platform, id DESC);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL DEFAULT 1,

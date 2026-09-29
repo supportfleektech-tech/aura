@@ -1,6 +1,6 @@
 /* AURA OS workspaces I — Career & Work, Clients & Projects, Personal Life. */
 import { useEffect, useState } from "react";
-import { ago, api, Client, Project, Task } from "./api";
+import { ago, api, Project, Task } from "./api";
 import { useStore } from "./store";
 import { useLang } from "./i18n";
 import { Btn, ChatThread, Composer, Dot, Empty, fmtDate, Icon, Panel, Pill, Progress, Row, Skel } from "./ui";
@@ -104,7 +104,7 @@ export function CareerView() {
           <AddApp onAdd={reload} />
           {(data?.applications || []).map((a) => (
             <Row key={a.id} icon="brief" title={`${a.role} @ ${a.company}`} sub={a.notes}
-              right={<select value={a.stage} onChange={async (e) => { await api.career.updateApp(a.id, { stage: e.target.value }); reload(); }}>
+              right={<select aria-label={`Stage for ${a.role} at ${a.company}`} value={a.stage} onChange={async (e) => { await api.career.updateApp(a.id, { stage: e.target.value }); reload(); }}>
                 {["saved", "applied", "screen", "interview", "offer", "rejected"].map((s) => <option key={s} value={s}>{s}</option>)}
               </select>} />
           ))}
@@ -237,7 +237,7 @@ function ProjectCard({ p, onDone }: { p: Project; onDone: () => void }) {
         <div className="pdetail">
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <input type="range" min={0} max={100} value={p.progress} onChange={async (e) => { await api.projects.update(p.id, { progress: parseInt(e.target.value, 10) }); onDone(); }} />
-            <select value={p.status} onChange={async (e) => { await api.projects.update(p.id, { status: e.target.value }); onDone(); }}>
+            <select aria-label={`Status for ${p.name}`} value={p.status} onChange={async (e) => { await api.projects.update(p.id, { status: e.target.value }); onDone(); }}>
               {["active", "paused", "review", "completed", "cancelled"].map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
@@ -313,7 +313,7 @@ export function PersonalView() {
         <Panel icon="wallet" title="Finance" sub={`Total tracked: KES ${(data?.spending_total || 0).toLocaleString()}`}>
           <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
             <Field value={amt} onChange={(e) => setAmt(e.target.value)} placeholder="Amount" />
-            <select value={cat} onChange={(e) => setCat(e.target.value)}>{["food", "transport", "rent", "airtime", "health", "shopping", "travel", "other"].map((c) => <option key={c} value={c}>{c}</option>)}</select>
+            <select aria-label="Expense category" value={cat} onChange={(e) => setCat(e.target.value)}>{["food", "transport", "rent", "airtime", "health", "shopping", "travel", "other"].map((c) => <option key={c} value={c}>{c}</option>)}</select>
             <Btn small kind="green" onClick={async () => { if (!amt) return; await api.personal.expense({ category: cat, amount: parseFloat(amt), currency: "KES" }); setAmt(""); reload(); toast("Expense added", "success"); }}>Add Expense</Btn>
           </div>
           {(data?.expenses || []).map((e) => <Row key={e.id} icon="wallet" title={`${e.category} · KES ${Number(e.amount).toLocaleString()}`} sub={`${e.note} · ${ago(e.created_at)}`} />)}

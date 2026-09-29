@@ -2,8 +2,9 @@
 
 Honest assessment after a full audit. Ordered by impact. Single-user is a
 deliberate design choice (item 1 deferred by owner). Items 2–15 all shipped;
-v1.14 added the machine layer, v1.15 hardened it (261 unit + 85 frontend +
-101 E2E + 299 router-eval + 27 agent-eval green).
+v1.14 added the machine layer, v1.15 hardened it. Current baseline: 344 unit
++ 175 frontend + 101 E2E + 299 router-eval + 33 agent-eval green, plus
+`prod_check` 11/11.
 
 ## Shipped in v1.15.0 — Fortress hardening
 

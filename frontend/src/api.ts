@@ -37,6 +37,7 @@ export interface ChatMsg {
   files?: { id: number; name: string }[];
   vision?: { file: string; status: string; model?: string }[];
   missions?: MissionProgress[];
+  thinking?: string[];
 }
 
 export interface MissionProgress {
@@ -102,6 +103,7 @@ export interface ChatEvents {
   onMission?: (m: MissionProgress) => void;
   onError?: (e: string) => void;
   onDone?: (d: { session_id: string }) => void;
+  onThinking?: (t: { text: string }) => void;
 }
 
 export async function chatStream(message: string, session_id: string | null, ev: ChatEvents, attachments: unknown[] = [], signal?: AbortSignal) {
@@ -139,6 +141,7 @@ export async function chatStream(message: string, session_id: string | null, ev:
           else if (curEvent === "plan") ev.onPlan?.(d);
           else if (curEvent === "step") ev.onStep?.(d);
           else if (curEvent === "token") ev.onToken?.(d.text);
+          else if (curEvent === "thinking") ev.onThinking?.(d);
           else if (curEvent === "approval") ev.onApproval?.(d);
           else if (curEvent === "result") ev.onResult?.(d);
           else if (curEvent === "memory") ev.onMemory?.(d);
@@ -161,7 +164,7 @@ export const api = {
     get: () => get<{ name: string; role: string; location: string; version: string }>("/me"),
     update: (b: Record<string, string>) => patch<{ name: string; role: string; location: string; version: string }>("/me", b),
   },
-  health: () => get<{ ok: boolean; services: { name: string; status: string; detail: string }[]; metrics: Record<string, number> }>("/health"),
+  health: () => get<{ ok: boolean; services: { name: string; status: string; detail: string }[]; metrics: Record<string, number>; active_model?: { backend: string; provider: string; model: string; privacy_mode: string; local_online: boolean; cloud_configured: boolean } }>("/health"),
   costs: () => get<any>("/costs"),
   analytics: { overview: () => get<Analytics>("/analytics/overview") },
   dashboard: () => get<Dashboard>("/dashboard"),
@@ -345,7 +348,7 @@ export const api = {
     reset: () => del<{ values: Record<string, unknown>; secrets: Record<string, boolean>; sources: Record<string, string> }>("/settings"),
   },
   cloud: {
-    models: (refresh = false) => get<{ models: { id: string; name: string; context_length: number; free: boolean }[]; cached: boolean; stale: boolean; count: number; error?: string; note?: string }>(`/cloud/models${refresh ? "?refresh=true" : ""}`),
+    models: (refresh = false) => get<{ models: { id: string; name: string; context_length: number; free: boolean; reasoning?: boolean; vision?: boolean; multimodal?: boolean; modality?: string }[]; cached: boolean; stale: boolean; count: number; error?: string; note?: string }>(`/cloud/models${refresh ? "?refresh=true" : ""}`),
     test: (b: { provider?: string; model?: string; api_key?: string }) => post<{ ok: boolean; latency_ms?: number; model: string; provider: string; reply?: string; error?: string }>("/cloud/test", b),
   },
   brief: {

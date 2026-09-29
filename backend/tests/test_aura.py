@@ -74,6 +74,12 @@ class AuraTest(unittest.TestCase):
         self.assertGreater(len(evs["result"][0]["text"]), 40)
 
     def test_journey_followup_approval(self):
+        # The approval gate only fires when there is actually something to send,
+        # so seed an overdue task first — otherwise AURA correctly requests
+        # approval for zero drafts and the journey is never exercised.
+        from app import db as _db
+        _db.run("INSERT INTO tasks (user_id,title,status,due_at) VALUES "
+                "(1,'T-J follow up overdue client','inbox',date('now','-1 day'))")
         r = self.c.post("/api/chat/stream", json={"message": "draft follow-up messages for overdue tasks"})
         evs = sse_events(r.text)
         self.assertIn("approval", evs)

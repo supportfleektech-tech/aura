@@ -140,6 +140,10 @@ def log_activity(kind: str, title: str, detail: str = "", domain: str = "general
 
 
 def notify(title: str, body: str = "", level: str = "info") -> None:
+    if DRY_RUN:
+        # Report the withheld notification so a dry run shows what it skipped.
+        blocked("push: notifications not sent")
+        return
     run("INSERT INTO notifications (user_id, title, body, level) VALUES (1,?,?,?)", (title, body, level))
 
 

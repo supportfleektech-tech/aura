@@ -91,7 +91,7 @@ export function ModelsView() {
 }
 
 function FeedModelList({ models, onlyFree, current, onPick }: {
-  models: { id: string; name: string; context_length: number; free: boolean }[];
+  models: { id: string; name: string; context_length: number; free: boolean; reasoning?: boolean; vision?: boolean; multimodal?: boolean }[];
   onlyFree: boolean; current: string; onPick: (id: string) => void;
 }) {
   const rows = models.filter((m) => !onlyFree || m.free).slice(0, 60);
@@ -101,8 +101,13 @@ function FeedModelList({ models, onlyFree, current, onPick }: {
       {rows.map((m) => (
         <button key={m.id} className={`modelrow ${m.id === current ? "on" : ""}`} onClick={() => onPick(m.id)}
           title={`${m.context_length} ctx · click to make this the cloud model`}>
-          <span>{m.name}</span>
-          <span className="dim">{m.free ? "free" : "paid"} · {(m.context_length / 1000).toFixed(0)}k</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, minWidth: 0 }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</span>
+            {m.reasoning && <span className="modelbadge violet">think</span>}
+            {m.vision && <span className="modelbadge blue">vision</span>}
+            {m.multimodal && <span className="modelbadge green">multi</span>}
+          </span>
+          <span className="dim" style={{ whiteSpace: "nowrap" }}>{m.free ? "free" : "paid"} · {(m.context_length / 1000).toFixed(0)}k</span>
         </button>
       ))}
     </div>

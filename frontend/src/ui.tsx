@@ -1,5 +1,5 @@
 /* AURA OS UI kit — icons, atoms, shell chrome, chat, composer. */
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ago, api, ChatMsg, md } from "./api";
 import { TKey, useLang } from "./i18n";
 import { useStore, View } from "./store";
@@ -238,21 +238,32 @@ export function UndoButton({ watch }: { watch: unknown }) {
 }
 
 export function TopBar() {
-  const { setPalette, lfm, online, me, dash, toast, setView, refresh } = useStore();
+  const { setPalette, lfm, online, me, dash, toast, setView, refresh, activeModel } = useStore();
   const { t } = useLang();
   const [showNotes, setShowNotes] = useState(false);
   const notes = dash?.notifications || [];
   const [canInst, setCanInst] = useState(false);
   useEffect(() => { initInstallPrompt(setCanInst); }, []);
   const unread = dash?.counts.unread || 0;
+  const am = activeModel;
+  const isCloud = am?.backend === "cloud";
+  const isLocal = am?.backend === "ollama";
+  const isBuiltin = am?.backend === "builtin";
+  const indicatorColor = isCloud ? (am.cloud_configured ? "green" : "amber")
+    : isLocal ? (am.local_online ? "green" : "amber")
+    : "blue";
+  const indicatorText = isCloud ? (am.cloud_configured ? "Cloud Ready" : "Cloud Not Configured")
+    : isLocal ? (am.local_online ? "Local Online" : "Local Offline")
+    : "Builtin Engine";
+  const modelLabel = am ? `${am.provider}: ${am.model}` : lfm;
   return (
     <header className="topbar">
       <button className="gsearch" onClick={() => setPalette(true)}>
         <Icon n="search" s={16} /><span>{t("top.search")}</span><kbd>Ctrl + K</kbd>
       </button>
       <div className="topright">
-        <span className={`lfm ${online ? (lfm.includes("Online") ? "on" : "standby") : "off"}`} title={lfm}>
-          <Dot c={online ? (lfm.includes("Online") ? "green" : "amber") : "red"} /><span>{lfm}<small>(Ollama / Llama 3.1)</small></span>
+        <span className={`lfm ${online ? "on" : "off"}`} title={`Privacy: ${am?.privacy_mode || "local-first"} · Backend: ${am?.backend || "unknown"}`}>
+          <Dot c={indicatorColor} /><span>{modelLabel}<small>{indicatorText}</small></span>
         </span>
         <button className="iconbtn" onClick={() => setShowNotes(!showNotes)} title={t("top.notifications")}>
           <Icon n="bell" s={18} />{unread > 0 && <em className="badge">{unread}</em>}
@@ -469,14 +480,42 @@ export function ChatThread({ compact = false }: { compact?: boolean }) {
   };
   const end = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
+  const [showNewMsg, setShowNewMsg] = useState(false);
+  const userScrolledUp = useRef(false);
+
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
-    if (nearBottom) end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  });
+    const handleScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+      userScrolledUp.current = !nearBottom;
+      setShowNewMsg(userScrolledUp.current);
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    if (nearBottom && !userScrolledUp.current) {
+      end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      setShowNewMsg(false);
+    }
+  }, [msgs, sending]);
+
+  const scrollToBottom = () => {
+    const el = box.current;
+    if (el) {
+      userScrolledUp.current = false;
+      setShowNewMsg(false);
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
+  };
+
   if (msgs.length === 0) return (
-    <div className="thread empty" aria-live="polite">
+    <div className="thread empty" aria-live="polite" style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
       {speaking && <Btn small onClick={stopSpeak}>Stop speaking</Btn>}
       <div className="chat-placeholder">
         <strong>Start a conversation</strong>
@@ -485,8 +524,8 @@ export function ChatThread({ compact = false }: { compact?: boolean }) {
     </div>
   );
   return (
-    <div ref={box} className={`thread ${compact ? "compact" : ""}`}>
-      {speaking && <div style={{ position: "sticky", top: 0, zIndex: 1 }}><Btn small onClick={stopSpeak}>Stop speaking</Btn></div>}
+    <div ref={box} className={`thread ${compact ? "compact" : ""}`} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      {speaking && <div style={{ position: "sticky", top: 0, zIndex: 1, background: "var(--surface)", borderBottom: "1px solid var(--border)" }}><Btn small onClick={stopSpeak}>Stop speaking</Btn></div>}
       {msgs.map((m) => (
         <div key={m.id} className={`msg ${m.role}`}>
           {m.role === "user" ? (
@@ -512,7 +551,21 @@ export function ChatThread({ compact = false }: { compact?: boolean }) {
                     {v.status === "analyzing" ? `Seeing ${v.file}…` : v.status === "done" ? `Saw ${v.file}` : `${v.file} unseen`}
                   </span>))}</div>
               )}
-              {m.text ? <div className="md" dangerouslySetInnerHTML={{ __html: md(m.text) }} /> : (sending && <span className="typing"><i /><i /><i /></span>)}
+              {m.thinking && m.thinking.length > 0 && (
+                <details className="thinking-block" open>
+                  <summary className="thinking-summary">
+                    <Icon n="spark" s={12} className="thinking-icon" />
+                    <span>Thinking…</span>
+                    <Icon n="chev" s={10} className="thinking-chev" />
+                  </summary>
+                  <div className="thinking-content">
+                    {m.thinking.map((t, i) => (
+                      <div key={i} className="thinking-line">{t}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              {m.text ? <div className="md" dangerouslySetInnerHTML={{ __html: md(m.text) }} /> : (sending && !m.thinking && <span className="typing"><i /><i /><i /></span>)}
               {(m.memories?.length || 0) > 0 && (
                 <div className="memchips">{m.memories!.map((x) => <span key={x.id} className="memchip" title={`relevance ${x.relevance}`}><Icon n="db" s={12} />{x.title.slice(0, 42)}</span>)}</div>
               )}
@@ -528,6 +581,11 @@ export function ChatThread({ compact = false }: { compact?: boolean }) {
           )}
         </div>
       ))}
+      {showNewMsg && (
+        <button className="new-msg-indicator" onClick={scrollToBottom} aria-label="Scroll to latest message">
+          <Icon n="chev" s={14} /> New messages
+        </button>
+      )}
       <div ref={end} />
     </div>
   );
@@ -574,22 +632,41 @@ export function Waveform({ active, bars = 42, h = 44 }: { active: boolean; bars?
   return <canvas ref={ref} width={bars * 7} height={h} className="wave" />;
 }
 
+const EMOJIS = [
+  "😀","😃","😄","😁","😆","😅","🤣","😂","🙂","🙃","😉","😊","😇","🥰","😍","🤩","😘","😗","☺️","😚","😙","😋","😛","😜","🤪","😝","🤑","🤗","🤭","🤫","🤔","🤐","🤨","😐","😑","😶","😏","😒","🙄","😬","🤥","😌","😔","😪","🤤","😴","😷","🤒","🤕","🤢","🤮","🤧","🥵","🥶","🥴","😵","🤯","🤠","🥳","😎","🤓","🧐","😕","😟","🙁","☹️","😮","😯","😲","😳","🥺","😦","😧","😨","😰","😥","😢","😭","😱","😖","😣","😞","😓","😩","😫","😤","😡","😠","🤬","😈","👿","💀","☠️","💩","🤡","👻","👽","👾","🤖","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","🤚","🖐","✋","🖖","👌","🤌","🤏","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦾","🦿","🦵","🦶","👂","🦻","👃","🧠","🫀","🫁","🦷","🦴","👀","👁","👅","👄","💋","🩸","👶","🧒","👦","👧","🧑","👱","👨","👩","🧓","👴","👵","🙍","🙎","🙅","🙆","💁","🙋","🙇","🤦","🤷","🧑‍🦽","🧑‍🦼","🧑‍🦯","🏃","💃","🕺","🕴️","🧍","🧎","🧑‍🦽","🧑‍🦼","🧑‍🦯","🏃","💃","🕺","🕴️","🧍","🧎","🛌","🧑‍🤝‍🧑","👭","👫","👬","💏","💑","👨‍👩‍👧","👨‍👩‍👧‍👦","👨‍👩‍👦‍👦","👨‍👩‍👧‍👧","👩‍👩‍👦","👩‍👩‍👦‍👦","👩‍👩‍👧","👩‍👩‍👧‍👧","👨‍👨‍👦","👨‍👨‍👦‍👦","👨‍👨‍👧","👨‍👨‍👧‍👧","👨‍👦","👨‍👦‍👦","👨‍👧","👨‍👧‍👧","👩‍👦","👩‍👦‍👦","👩‍👧","👩‍👧‍👧","🗣️","👤","👥","🫂","👪","🧑‍🤝‍🧑","👭","👫","👬","💏","💑","👨‍👩‍👧","👨‍👩‍👧‍👦","👨‍👩‍👦‍👦","👨‍👩‍👧‍👧","👩‍👩‍👦","👩‍👩‍👦‍👦","👩‍👩‍👧","👩‍👩‍👧‍👧","👨‍👨‍👦","👨‍👨‍👦‍👦","👨‍👨‍👧","👨‍👨‍👧‍👧","👨‍👦","👨‍👦‍👦","👨‍👧","👨‍👧‍👧","👩‍👦","👩‍👦‍👦","👩‍👧","👩‍👧‍👧","🗣️","👤","👥","🫂","🧠","🫀","🫁","🦷","🦴","👀","👁","👅","👄","💋","🩸"
+];
+
 /* ================= composer ================= */
 export function Composer({ big = false }: { big?: boolean }) {
   const { send, sending, listening, toggleListen, transcript, toast, refresh, newChat, composerFocus, stopGenerating } = useStore();
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [showEmoji, setShowEmoji] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
   const wasListening = useRef(false);
   const fref = useRef<HTMLInputElement>(null);
   const iref = useRef<HTMLInputElement>(null);
   const lastFocusReq = useRef(0);
+  const emojiRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (composerFocus !== lastFocusReq.current) {
       lastFocusReq.current = composerFocus;
       ta.current?.focus();
     }
   }, [composerFocus]);
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (emojiRef.current && !emojiRef.current.contains(e.target as Node)) {
+        setShowEmoji(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+  const insertEmoji = (emoji: string) => {
+    setText((prev) => prev + emoji);
+    ta.current?.focus();
+  };
   const submit = async () => {
     if (sending) return;
     let atts: unknown[] = [];
@@ -614,8 +691,10 @@ export function Composer({ big = false }: { big?: boolean }) {
   }, [listening]);
   return (
     <div className={`composer ${big ? "big" : ""}`}>
-      <input ref={fref} type="file" multiple hidden onChange={(e) => { setFiles([...files, ...Array.from(e.target.files || [])]); e.target.value = ""; }} />
-      <input ref={iref} type="file" accept="image/*" multiple hidden onChange={(e) => { setFiles([...files, ...Array.from(e.target.files || [])]); e.target.value = ""; }} />
+      <input ref={fref} type="file" multiple hidden aria-label="Attach files"
+        onChange={(e) => { setFiles([...files, ...Array.from(e.target.files || [])]); e.target.value = ""; }} />
+      <input ref={iref} type="file" accept="image/*" multiple hidden aria-label="Attach image"
+        onChange={(e) => { setFiles([...files, ...Array.from(e.target.files || [])]); e.target.value = ""; }} />
       <textarea
         ref={ta} rows={big ? 3 : 2} value={listening ? (transcript || "Listening… speak now") : text}
         onChange={(e) => setText(e.target.value)}
@@ -633,6 +712,7 @@ export function Composer({ big = false }: { big?: boolean }) {
           <button className={listening ? "live" : ""} onClick={() => toggleListen()} title="Voice input"><Icon n="mic" s={14} /> {listening ? "Stop" : "Voice"}</button>
           <button onClick={() => fref.current?.click()} title="Files"><Icon n="file" s={14} /> File</button>
           <button onClick={newChat} title="Start a new conversation"><Icon n="plus" s={14} /> New</button>
+          <button onClick={() => setShowEmoji(!showEmoji)} title="Emoji picker"><Icon n="spark" s={14} /></button>
         </div>
         <div className="cright">
           <Waveform active={listening || sending} bars={18} h={26} />
@@ -640,6 +720,16 @@ export function Composer({ big = false }: { big?: boolean }) {
           <button className="sendbtn" onClick={submit} disabled={sending} title="Send"><Icon n="send" s={18} /></button>
         </div>
       </div>
+      {showEmoji && (
+        <div ref={emojiRef} className="emoji-picker">
+          <div className="emoji-search"><input type="text" placeholder="Search emojis…" onChange={(e) => { /* filter */ }} /></div>
+          <div className="emoji-grid">
+            {EMOJIS.map((emoji) => (
+              <button key={emoji} className="emoji-btn" onClick={() => insertEmoji(emoji)}>{emoji}</button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

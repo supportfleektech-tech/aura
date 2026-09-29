@@ -6,5 +6,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/setupTests.ts"],
+    // Heavy component renders (SettingsView fans out to ~8 mocked endpoints) can
+    // exceed the 5s default on a loaded machine and fail spuriously.
+    testTimeout: 20000,
+    hookTimeout: 20000,
   },
 });

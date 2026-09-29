@@ -141,7 +141,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
       <SetRow title={t("ob.role")} control={<input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Builder" />} />
       <SetRow title={t("ob.location")} control={<input value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="Nairobi, Kenya" />} />
       <SetRow title={t("ob.timezone")} control={
-        <select value={tz} onChange={(e) => setTz(e.target.value)}>
+        <select aria-label={t("ob.timezone")} value={tz} onChange={(e) => setTz(e.target.value)}>
           {ZONES.map((z) => <option key={z} value={z}>{z}</option>)}
         </select>
       } />

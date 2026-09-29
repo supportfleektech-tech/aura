@@ -26,7 +26,7 @@
                           ▼
               ┌───────────────────────┐
               │ SQLite (WAL) · db.py  │  single pooled conn + RLock
-              │ 26 tables · FTS index │  users…audit (see below)
+              │ 58 tables · FTS index │  users…audit (see below)
               └───────────────────────┘
 ```
 
@@ -65,6 +65,7 @@ table check → safety-copies live DB → `db.reset()` + file swap + WAL cleanup
 | Career | `resumes`, `applications`, `interviews` |
 | Personal | `journal`, `goals`, `expenses`, `habits`, `sleep_logs` |
 | Ops | `automations`, `activity`, `notifications`, `approvals`, `backups`, `runs`, `toolcalls`, `audit`, `push_subscriptions` |
+| Gateway | `gateway_events` — the canonical inbound/outbound message feed behind `/api/gateway/status` `events[]`; `activity` stays the human-readable audit log |
 
 Conventions: `user_id` default 1 (single-user), UTC ISO-8601 timestamps,
 soft-delete for memories (`deleted_at`), JSON sidecars (`*_json`) for
@@ -80,10 +81,13 @@ EXISTS` + `INSERT OR IGNORE`); the one true migration so far
   writers are serialized, readers are fast enough for a personal OS.
 - **Privacy-ordered inference chain.** `AURA_PRIVACY` selects the backend
   order — `local-first`: Ollama → builtin; `hybrid`: Ollama → cloud →
-  builtin; `cloud`: cloud first. The builtin grounded composer is always
-  last, so AURA answers with zero models. Cloud calls use an
-  OpenAI-compatible endpoint with withheld sensitive memories + scrubbed
-  grounding, and every answer is labeled with its engine.
+  builtin; `cloud`: cloud first. **Unknown modes fail closed to local-first,
+  and `local-first` never contains `cloud` and never even constructs a cloud
+  client** — picking a cloud model requires explicitly switching privacy to
+  `hybrid`/`cloud`. The builtin grounded composer is always last, so AURA
+  answers with zero models. Cloud calls use an OpenAI-compatible endpoint with
+  withheld sensitive memories + scrubbed grounding, and every answer is
+  labeled with its engine.
 - **Real delivery, explicit opt-in.** `providers.py` implements Telegram Bot
   API, SMTP, Discord/Slack webhooks, and a generic WhatsApp-provider POST
   behind per-platform `sandbox|live` modes. Sandbox is the default and makes

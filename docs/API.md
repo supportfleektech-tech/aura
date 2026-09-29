@@ -86,7 +86,7 @@ curl -N -X POST localhost:8000/api/chat/stream -H 'Content-Type: application/jso
 - `GET ""?status=&domain=&q=` → `{tasks[]}` (client/project names joined)
 - `POST ""` `{title!, description?, status?, priority?, due_at?, project_id?, client_id?, domain?, tags?[], recurrence?}` — status/priority normalized (`In Progress`→`in_progress`, `HIGH`→`high`)
 - `PATCH /{tid}` partial → updated row; `DELETE /{tid}` → `{ok}`
-- `GET /overdue/list` → `{overdue[]}`
+- `GET /overdue/list` → `{overdue[], count}`. The key is `overdue`, not `tasks` — `api.ts`, the orchestrator's memory harvest and `e2e_check` all read `overdue`.
 
 Task status: `inbox|planned|in_progress|blocked|waiting|completed|cancelled`.
 Priority: `low|medium|high|urgent`.
@@ -103,7 +103,7 @@ Priority: `low|medium|high|urgent`.
 - `GET ""` → `{projects[]}` each with `milestones[]`, client names
 - `POST ""` `{name!, client_id?, status?, progress?, deadline?, description?, health?}`
 - `PATCH /{pid}` → via Hermes; `DELETE /{pid}` → `{ok}`
-- `POST /{pid}/milestones` `{title?, status?, due_at?}` → `{id}`
+- `POST /{pid}/milestones` `{title!, status?, due_at?}` → stored milestone row; blank title `400`, unknown project `404`. `PATCH`/`DELETE /{pid}/milestones/{mid}` → row / `{ok}`
 
 ## Career — `/api/career`
 
@@ -112,7 +112,7 @@ Priority: `low|medium|high|urgent`.
 - `GET /resumes` → full rows; `GET /resumes/{rid}/download` → markdown attachment
 - `POST /applications` `{company, role, stage?, url?, notes?}` → `{id}`; `PATCH /applications/{aid}` allow-listed
 - `POST /interviews` `{company, role, scheduled_at?, score?, feedback?, qa?}` → `{id}`
-- `GET /interviews/questions?role=` → `{questions[6], role}`
+- `GET /interviews/questions?role=` → `{questions[7], role, count}`. Deterministic and offline; when a `job_description` is supplied its distinctive terms are folded into one question.
 - `GET /blocks?date=` → `{date, blocks[]}`; `POST /blocks/plan` `{…}` → `{created[]}` (AI day plan); `POST /blocks` `{title?, starts_at!, ends_at!, kind?}` → `{id}`; `DELETE /blocks/{bid}`
 
 ## Personal — `/api/personal`
@@ -134,8 +134,17 @@ Priority: `low|medium|high|urgent`.
 ## Automations — `/api/automations`
 
 - `GET ""` → `{automations[]}` (incl. success/fail counts, next_run)
-- `POST ""` `{name?, trigger_kind?, trigger?, action_kind?, action?, next_run?}` → `{id}` — trigger `schedule|event|manual|feed` (manual/event are one-shot; `feed` fires when a matching RSS item is discovered — `trigger: {feed_id?, contains?}`, keyword matches title+link), action `notify|backup|chat|webhook|brief|terminal|home`. Brief `action`: `{briefing_id? | kind?}` (runs the briefing, posts a notification). Webhook `action`: `{url!, secret?, payload?, timeout?}` (http/https only, else `400`); fires signed HMAC POST with `X-Aura-Idempotency-Key` + body `idempotency_key` (stable per-fire uuid that survives retries), retries with exp backoff (5m→2h). `comms.send` dedupes identical sends within 60s via `send_dedupe`. Terminal `action`: `{command!, machine?}` — `400` at creation for dangerous patterns (unattended automations never run footguns, even if `terminal_allow_dangerous` is on); fires through the audited exec path (`source=automation`). Home `action`: `{domain!, service!, entity_id?, data?}` validated snake_case.
-- `PATCH /{aid}` allow-listed (incl. `status` active/paused) → `{ok}`
+- `POST ""` `{name?, trigger_kind?, trigger?, action_kind?, action?, next_run?}` → `{id}` — trigger `schedule|event|manual|feed|file`; only `schedule` gets a `next_run` (every other kind is one-shot), action `notify|backup|chat|webhook|brief|proactive|terminal|home|script`.
+- **Actions are validated before the row is written** (and again on `PATCH` against the merged config); a rejected action returns `400` and persists nothing:
+  - `webhook` `{url!, secret?, payload?}` — `https` required; `http` is accepted **only** for loopback (`localhost`/`127.0.0.1`/`::1`) so a same-box integration works without cleartext leaving the machine. Fires a signed POST: body `{"event":"automation.fired", "automation_id", "trigger", "data", "idempotency_key"}`, headers `X-Aura-Event`, `X-Aura-Idempotency-Key` and `X-Aura-Signature: sha256=<hmac(secret, exact body bytes)>` when a `secret` is set. Failures back off exponentially (2m→32m, then `next_run` cleared) and record `fail_count` + `_retry_n`; a success clears `_retry_n`.
+  - `terminal` `{command!, machine?}` — `400` at creation for `dangerous` patterns; fires through the audited exec path (`source=automation`).
+  - `home` `{domain!, service!, entity_id?, data?}` — `entity_id`/`entity` must match `domain.object_id`; every token is `[A-Za-z0-9_]+`, so metacharacters never reach the gateway.
+  - `script` `{script_id? | name!}` — must resolve to a real script, else `400 unknown script`.
+  - `brief` `{briefing_id? | kind?}` (`morning|evening|weekly|custom`; `custom` needs `prompt`) — runs the briefing and posts a notification.
+  - `notify|chat` → `comms.send`, which suppresses an identical send within 60s.
+- `PATCH /{aid}` allow-listed (incl. `status` active/paused) → `{ok}`; unknown id → `404`
+- `POST /{aid}/run` → forces due + ticks → `{ran: [{id, ok, name, error?}]}`; with `?dry_run=true` → `{dry_run: true, fired: {ok, error?}, blocked[]}` and `last_run`/`next_run` untouched; unknown id → `404`. `DELETE /{aid}` → `{ok}`
+- Event kinds (`feed`/`file`) fire through `fire_event`, which shares the scheduled path's counters and audit trail. `proactive` actions call `notify_top(scan())` — `scan()` alone only ranks and never surfaces anything.
 - `POST /{aid}/run` → forces due + ticks → `{ran: n}`; `DELETE /{aid}` → `{ok}`
 
 ## Missions — `/api/missions`
@@ -165,9 +174,9 @@ Priority: `low|medium|high|urgent`.
 
 ## Undo & dry-run — `/api/undo`, `/api/hermes/tools`
 
-- `GET /api/undo` → `{journal[{id, at, tool, op, tbl, row_id, summary}], undoable}` — last 10 journaled writes (tasks, clients, projects, memories, events; cap 50).
+- `GET /api/undo` → `{journal[{id, at, tool, op, tbl, row_id, summary}], undoable, remaining}` — last 10 journaled writes shown; `remaining` is the true total (tasks, clients, projects, memories, events; cap 50).
 - `POST /api/undo` `{steps?}` → `{undone[{id, summary, result}], remaining}` — applies inverse ops (create→delete, update/delete→restore before-image). Chat: "undo that".
-- `POST /api/hermes/tools/{name}/dry-run` `{args?, ctx?}` → `{dry_run, tool, result?, error?, blocked[]}` — executes R0/R1 tools with writes rolled back and LLM/network/file effects suppressed (`blocked[]` lists them). Unknown tool → `404`, R2+ → `403`.
+- `POST /api/hermes/tools/{name}/dry-run` `{args?, ctx?}` → `{dry_run, ok, result?, error?, blocked[]}` — executes R0/R1 tools with writes rolled back and LLM/network/file effects suppressed (`blocked[]` lists them, e.g. `"push: notifications not sent"`). Unknown tool → `404`, R2+ → `403`. A dry run never consumes the send-dedup fingerprint, so previewing cannot suppress the real send.
 
 ## Activity & notifications
 
@@ -182,7 +191,7 @@ Priority: `low|medium|high|urgent`.
 
 ## Gateway — `/api/gateway`
 
-- `GET /status` → `{integrations[6]: {platform, status, account, last_test, mode, configured, missing[], fields (secrets redacted), last_error}, events[20]}` (incl. `homeassistant` control plane)
+- `GET /status` → `{integrations[6]: {platform, status, account, last_test, mode, configured, missing[], fields (secrets redacted), last_error}, events[20]: {id, platform, actor, direction, text, ts}}` (incl. `homeassistant` control plane). `events` is the canonical `gateway_events` feed — inbound and outbound, always carrying `platform`.
 - `POST /{platform}/connect` `{account?, mode?: sandbox|live, config?{...}}` → `{ok, mode}` (platform: telegram|discord|slack|whatsapp|email|homeassistant); live requires credentials or `400` (`missing live credentials: …`); telegram needs `bot_token`, whatsapp needs `webhook_url` **or** Cloud `wa_token`+`phone_number_id`, homeassistant needs `base_url`+`token`.
 - `POST /{platform}/disconnect` `{forget?}` → `{ok}`; `POST /{platform}/test` → `{ok, platform, latency_ms, detail?}` (measured, marks connected; webhook platforms get one real test message)
 - `POST /simulate` `{platform?, text?, send_live?, to?}` → `{event_id, sent?, mode?}` (inbound simulation onto the bus, or real live delivery)

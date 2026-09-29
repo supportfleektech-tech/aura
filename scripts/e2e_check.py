@@ -15,6 +15,7 @@ import time
 import sys
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 BASE = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:8000"
 PASS, FAIL, WARN = [], [], []
@@ -70,13 +71,21 @@ def chat(msg):
 
 
 def check(name, fn):
+    import traceback
     try:
         fn()
         PASS.append(name)
         print(f"  ✓ {name}")
     except AssertionError as e:
-        FAIL.append((name, str(e)[:220]))
-        print(f"  ✗ {name} — {str(e)[:220]}")
+        # Bare `assert` failures give an empty message, which hides which step
+        # broke. Report the source line so CI output is actionable.
+        line = ""
+        tb = traceback.extract_tb(e.__traceback__)
+        if tb:
+            frame = tb[-1]
+            line = f" @{Path(frame.filename).name}:{frame.lineno} `{frame.line}`"
+        FAIL.append((name, (str(e)[:220] + line).strip()))
+        print(f"  ✗ {name} — {str(e)[:220]}{line}")
     except Exception as e:
         FAIL.append((name, f"{type(e).__name__}: {str(e)[:200]}"))
         print(f"  ✗ {name} — {type(e).__name__}: {str(e)[:200]}")
@@ -1098,9 +1107,14 @@ print("== voice v2 ==")
 
 def _t_voice_v2_e2e():
     s, d, _ = req("GET", "/api/voice/engines")
-    assert s == 200 and [e["id"] for e in d["engines"]] == ["browser", "piper", "edge"], (s, d)
+    # browser, piper, kokoro, edge — kokoro was added in v1.15 and must stay listed
+    # even when its assets are absent, so the UI can explain how to get it.
+    assert s == 200 and [e["id"] for e in d["engines"]] == ["browser", "piper", "kokoro", "edge"], (s, d)
     assert len(d["emotions"]) == 6, d
-    assert len(d["engines"][2]["voices"]) == 8, d
+    # Look engines up by id, not index — adding an engine shifts every position.
+    by_id = {e["id"]: e for e in d["engines"]}
+    assert len(by_id["edge"]["voices"]) == 8, d
+    assert len(by_id["kokoro"]["voices"]) >= 2, d
     s, _, _ = req("POST", "/api/voice/speak", {"text": "x", "engine": "nope"})
     assert s == 400, s
     s, _, _ = req("POST", "/api/voice/speak", {"text": "  ", "engine": "piper"})
@@ -1305,7 +1319,11 @@ check("script library: save/run/deny/chat + counters", _t_scripts_e2e)
 def _t_watch_e2e():
     import os as _os
     import time as _tm
-    inbox = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data", "inbox")
+    # Ask the server where it actually watches. Hardcoding <repo>/data/inbox
+    # only works when AURA_DATA_DIR is unset, so this failed on any isolated run.
+    s, w, _ = req("GET", "/api/watch")
+    inbox = (w.get("paths") or [w.get("default_dir")])[0]
+    assert s == 200 and inbox, w
     _os.makedirs(inbox, exist_ok=True)
     name = f"e2e-watch-{int(_tm.time())}.txt"
     fpath = _os.path.join(inbox, name)

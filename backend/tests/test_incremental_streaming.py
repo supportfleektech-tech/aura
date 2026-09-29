@@ -66,37 +66,36 @@ class IncrementalTurnTest(unittest.TestCase):
         self.assertEqual(result["engine"], "builtin")
 
     def test_first_token_precedes_provider_completion_and_close_stops_generation(self):
-        from threading import Event
-        import asyncio
+        """The first token must reach the caller before the provider finishes, and
+        abandoning the turn must close the upstream stream rather than leak it."""
+        import gc
 
-        completed = Event()
-        closed = Event()
+        class MockStream:
+            def __init__(self, items):
+                self._items = list(items)
+                self.closed = False
+            def __iter__(self):
+                return iter(self._items)
+            def close(self):
+                self.closed = True
 
-        def stream(messages, **kwargs):
-            try:
-                yield "First "
-                completed.set()
-                yield "last"
-            finally:
-                closed.set()
+        stream = MockStream(["First ", "last"])
+        with patch.object(orchestrator.model_router.ollama, "chat_stream",
+                          return_value=stream):
+            gen = orchestrator.run_turn("hello", "session")
+            # Consume only up to and including the first token, then hang up.
+            for chunk in gen:
+                if chunk.startswith("event: token"):
+                    self.assertIn("First ", chunk)
+                    break
+            else:
+                self.fail("no token event was streamed")
+            self.assertFalse(stream.closed, "stream closed before the turn finished")
+            gen.close()  # client hung up mid-turn
 
-        probe = {"local_lfm": {"online": True, "model": "test"},
-                 "cloud": {"configured": False}}
-        with patch.object(orchestrator.db, "run", return_value=1), \
-             patch.object(orchestrator.db, "qone", return_value={"id": "session"}), \
-             patch.object(orchestrator.model_router, "probe", return_value=probe), \
-             patch.object(orchestrator.model_router, "chain", return_value=["ollama", "builtin"]), \
-             patch.object(orchestrator.model_router.ollama, "chat_stream", return_value=iter(["First ", "last"])), \
-             patch("app.compact.session_context", return_value={"history": [], "summary": ""}), \
-             patch("app.compact.maybe_compact"), \
-             patch.object(orchestrator.memory_engine, "observe", return_value=[]), \
-             patch.object(orchestrator.model_router.ollama, "chat_stream", return_value=iter(["First ", "last"])):
-
-            events = []
-            for e in orchestrator.run_turn("hello", "session"):
-                events.append(e)
-            tokens = [d["text"] for e, d in events if e == "token"]
-            self.assertEqual(tokens, ["First ", "last"])
+        gc.collect()
+        self.assertTrue(stream.closed,
+                        "closing the turn must release the upstream LLM connection")
 
 
 if __name__ == "__main__":

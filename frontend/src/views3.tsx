@@ -4,7 +4,7 @@ import { api, Briefing, BriefRun, Cal, CalEvent, Mail, MailFull, Session, md } f
 import { useStore } from "./store";
 import { useLang } from "./i18n";
 import { Field, useFetch } from "./views1";
-import { Btn, ChatThread, Composer, Empty, Icon, Panel, Pill, Row, Seg, SetRow, Skel } from "./ui";
+import { Btn, ChatThread, Composer, Empty, Icon, Panel, Pill, Row, Seg, Skel } from "./ui";
 
 const nboTime = (iso: string) => {
   try { return new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Africa/Nairobi" }).format(new Date(iso)); }
@@ -251,10 +251,10 @@ export function CalendarView() {
           <Field value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Event title…" />
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
-          <select value={dur} onChange={(e) => setDur(e.target.value)}>
+          <select aria-label="Event duration" value={dur} onChange={(e) => setDur(e.target.value)}>
             <option value="15">15m</option><option value="30">30m</option><option value="60">1h</option><option value="90">1.5h</option><option value="120">2h</option>
           </select>
-          <select value={calId} onChange={(e) => setCalId(Number(e.target.value))}>
+          <select aria-label="Calendar" value={calId} onChange={(e) => setCalId(Number(e.target.value))}>
             {cals.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <Field value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="Location (optional)" />
@@ -306,7 +306,7 @@ export function BriefingsPanel() {
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
         <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="Briefing name (for schedules)…" />
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
+        <select aria-label="Briefing type" value={kind} onChange={(e) => setKind(e.target.value)}>
           <option value="morning">morning</option><option value="evening">evening</option><option value="weekly">weekly</option><option value="custom">custom</option>
         </select>
         <Btn small kind="green" onClick={async () => {

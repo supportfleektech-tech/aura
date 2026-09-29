@@ -142,7 +142,9 @@ def _fire_feed_automations(item: dict, feed: dict) -> int:
         if kw and kw not in blob:
             continue
         from .hermes import hermes
-        res = hermes._fire_one(a)  # shared fire path (updates last_run etc.)
+        # fire_event records last_run/success_count/fail_count; _fire_one alone would
+        # silently skip the audit trail for every event-triggered automation.
+        res = hermes.fire_event(a, fire_id=f"feed-{a['id']}-{item['link'][:80]}")
         fired += 1 if res.get("ok") else 0
     return fired
 

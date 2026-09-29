@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from . import db
+from . import db, prefs
 
 SCHEDULES = ("off", "hourly", "daily", "weekly")
 
@@ -314,7 +314,7 @@ def _fire_step(m: dict, step: dict) -> None:
                      (f"Mission: send {len(drafts)} draft(s)",
                       db.jdump({"mission_id": m["id"], "step_idx": m["step_idx"],
                                 "kind": "send_drafts", "drafts": drafts, "channel": "email"}),
-                      prefs.get("approval_timeout", "+30 seconds")))
+                      prefs.get("approval_timeout")))
         step["status"], step["approval_id"] = "awaiting", aid
         m["status"] = "awaiting"
         _save(m)
@@ -337,7 +337,7 @@ def _fire_step(m: dict, step: dict) -> None:
                      (risk, f"Mission step: {step.get('label')}",
                       db.jdump({"mission_id": m["id"], "step_idx": m["step_idx"],
                                 "kind": "tool", "tool": tool, "args": step.get("args", {})}),
-                      prefs.get("approval_timeout", "+30 seconds")))
+                      prefs.get("approval_timeout")))
         step["status"], step["approval_id"] = "awaiting", aid
         m["status"] = "awaiting"
         _save(m)

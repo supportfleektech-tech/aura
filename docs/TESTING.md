@@ -3,30 +3,39 @@
 Five layers, all runnable locally. Unit + eval + frontend need no
 Docker, Ollama, or network; E2E needs the running backend.
 
-## 1. Backend unit tests (80 tests, ~2s)
+## 1. Backend unit tests (344 tests, ~40s)
 
 ```bash
-cd backend && python3 -m unittest -v
+cd backend && AURA_DATA_DIR="$(mktemp -d)" OLLAMA_BASE_URL=http://127.0.0.1:1 \
+  ../venv/bin/python -m unittest discover -s tests
 ```
 
-Uses a **temporary SQLite database** (`AURA_DB_PATH` → tmp dir), so your real
-`data/` is untouched. Coverage:
+**A temporary `AURA_DATA_DIR` is required** — it relocates the DB, uploads and
+backups. `AURA_DB_PATH` alone is not enough. `OLLAMA_BASE_URL=http://127.0.0.1:1`
+forces the hashed-embedding path so the suite never needs Ollama running.
+
+The suite must be **fully green**; a failing test means the behaviour is
+unimplemented, not that the test is optional. Skips drop from 2 to 1 once
+`requirements-voice.txt` (edge-tts) is installed. Coverage:
 
 | Area | Tests |
 |---|---|
-| REST CRUD | tasks / clients / projects create-read-update-delete |
+| REST CRUD | tasks / clients / projects / milestones create-read-update-delete |
 | Chat journeys | plan_day, task toggle by title + ID, project create, meeting + backup, client follow-ups |
 | Routing regressions | Plural/ordering traps: `draft follow-ups`, `gateway status`, `new client X`, `how are my projects doing`, `practice guitar` ≠ interview… |
-| Memory | Store → search round-trip, topic forget |
+| Memory | Store → search round-trip, topic forget, retrieval union |
 | Approvals | Pending → approve with edited drafts → sent + persisted `drafts_sent` |
 | Backups | Run → marker row → restore → marker gone; rejects `../evil` + missing files |
 | Dashboard | No fabricated insights (sleep/delta computed or empty) |
 | Providers (mocked) | Telegram payload + failure surfacing, SMTP login + client-email resolution, credential redaction, live validation, unknown-recipient errors |
 | Cloud (mocked) | Default-off even with key set, hybrid answers + sensitive-memory redaction, failure falls back to builtin |
 | Limits | Bucket allow/deny unit test, HTTP `429` + headers integration, upload `413`, chat caps, CORS + security headers |
-| Tools registry | All Hermes tools registered with risk levels |
+| Tools registry | All Hermes tools registered with risk levels; every R0/R1 tool survives empty args |
 | Sleep | Chat times/duration/clarify, API + dashboard + overview, validation 400s |
-| Webhooks | Create validation, signed fire (HMAC verified), backoff + recover, manual one-shot |
+| Webhooks | Create validation (https or loopback http), signed fire (HMAC verified), backoff + recover, manual one-shot |
+| Automations | Action validation before persist, merged-config validation on PATCH, one-shot event kinds, file/feed fires counted |
+| Undo / dry-run | create+update+delete round-trip; dry-run persists nothing and reports `blocked[]` |
+| Missions | Template/keyword plans, R2 approval holds and resume, reject skips the step |
 | File parsing | DOCX/XLSX/PPTX/PDF/image extraction, upload → memory indexing |
 | Embeddings | Model tags, lazy migration to new embedder, legacy-DB ALTER migration |
 | Push | Subscribe/unsubscribe/validation, mocked send + 410 prune |
@@ -35,16 +44,25 @@ Uses a **temporary SQLite database** (`AURA_DB_PATH` → tmp dir), so your real
 | Sync config | `litestream.yml` valid, entrypoint branches, history replica field |
 | Router guard | Eval-file loader: ≥200 cases + spot-checks |
 
-Add a test in `backend/tests/test_aura.py` (`AuraTest` class, TestClient `self.c`,
+Separate modules cover streaming cancellation (`test_incremental_streaming.py`),
+Kokoro personality, MCP connections, memory retrieval/correction, recovery
+isolation, vloop wiring, and guard/limit→inference binding. Add a test in
+`backend/tests/test_aura.py` (`AuraTest` class, TestClient `self.c`,
 `sse_events()` helper parses chat streams). Run the file's tests after any
 orchestrator/inference/hermes change.
 
-## 2. Live end-to-end (54 checks, ~10s)
+> Do **not** run the backend suite and `npx vitest` concurrently — both saturate
+> the box and heavy component renders hit their timeout.
+
+## 2. Live end-to-end (101 checks, ~90s)
 
 ```bash
 # backend must be running on :8000 (uses REAL data dir — self-cleaning)
 python3 scripts/e2e_check.py [http://host:8000]
 ```
+
+A failed check prints the source line (`@e2e_check.py:NN`) so a bare `✗` still
+tells you which step broke. It is a **CI gate**, not an optional extra.
 
 Hits the running server over HTTP and asserts behavior, not just status
 codes: intent routing per journey, persisted state after toggles, approval →
@@ -55,6 +73,9 @@ sha256 length, resume download `Content-Disposition`, validation negatives
 it does leave benign journal/mood/expense/activity rows and one backup
 archive behind (by design — it proves the write paths).
 
+> **Check free disk first.** A full disk surfaces as `500` on file upload /
+> docx indexing, which looks exactly like a code bug but is not one.
+
 Exit code `0` = all green. Coverage map:
 
 - meta (4): health (9 services), system, me+tools, dashboard honesty
@@ -62,10 +83,18 @@ Exit code `0` = all green. Coverage map:
 - chat journeys (24 intents + toggle persistence)
 - approvals (1), CRUD sweeps: tasks, clients+projects, career, personal,
   memory, automations, activity+notifications, gateway, files, voice+backup,
-  Hermes, negatives (12)
-- v1.2 batch (9): sleep, webhook self-fire, plugins, embeddings health,
-  push roundtrip, voice live (skips gracefully without models), PWA assets,
-  docx upload+search, replica field
+  Hermes, negatives
+- v1.2 batch: sleep, webhook self-fire + https validation, plugin tools,
+  embeddings health, push roundtrip, voice live (skips gracefully without
+  models), PWA assets, docx upload+search, replica field
+- fortress: origin guard, script library, folder watch (asks the server for
+  its watch path, so it works under any `AURA_DATA_DIR`), machine liveness
+
+`scripts/prod_check.py` (11 checks) additionally verifies version consistency
+across config/package/footer/changelog, presence of a real `frontend/dist`,
+deploy files, DB integrity, and push/VAPID readiness. It needs
+`AURA_VAPID_PUBLIC_KEY`, `AURA_VAPID_PRIVATE_KEY` and `AURA_VAPID_SUBJECT`
+(`scripts/gen_vapid.py` generates a throwaway pair).
 
 ## 3. Frontend checks
 

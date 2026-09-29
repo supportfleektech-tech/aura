@@ -120,9 +120,9 @@ export function HomeView() {
         </div>
       </div>
 
-      <section aria-label="Text chat">
+      <section aria-label="Text chat" style={{ display: 'flex', flexDirection: 'column', height: '460px' }}>
         <ChatThread />
-        <div ref={composerArea}><Composer /></div>
+        <div ref={composerArea} style={{ flexShrink: 0 }}><Composer /></div>
       </section>
 
       <OpportunitiesCard />

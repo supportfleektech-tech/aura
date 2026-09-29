@@ -33,10 +33,40 @@ def ats_analyze(text: str, job_description: str, name: str = "Resume") -> dict:
 
 
 def interview_questions(job_description: str, role: str = "Software Engineer") -> dict:
-    """Generate interview questions based on job description."""
+    """Generate a role-aware interview question set.
+
+    Always returns a full set (>= 6) so it is useful on its own, and folds in
+    terms lifted from the job description when one is supplied. Deterministic —
+    no network, no LLM — so it is instant and works offline.
+    """
+    role = (role or "this role").strip() or "this role"
+    jd = (job_description or "").strip()
     questions = [
-        f"Describe a challenging project you worked on as a {role}.",
-        f"How do you approach debugging complex issues in {role.lower()}?",
-        f"What's your experience with the technologies mentioned in the job description?",
+        f"Walk me through a challenging project you delivered as a {role}. What was your specific contribution?",
+        f"How do you prioritise competing deadlines in {role.lower()} work?",
+        "Describe a time something went wrong. What did you do, and what changed afterwards?",
+        f"How do you keep your {role.lower()} skills current — and how do you know what's worth learning?",
+        "How do you handle disagreement with a colleague or manager about a technical or clinical judgement?",
+        "What questions do you have for us about the role and the team?",
     ]
-    return {"questions": questions}
+
+    # Fold in concrete terms from the posting so the set is specific, not generic.
+    terms: list[str] = []
+    stop = {
+        "and", "the", "with", "for", "our", "you", "are", "will", "have", "this",
+        "that", "from", "who", "job", "role", "team", "work", "years", "year",
+        "experience", "strong", "good", "ability", "able", "must", "should",
+    }
+    for raw in jd.replace("/", " ").replace(",", " ").replace("(", " ").replace(")", " ").split():
+        word = raw.strip(".-_").lower()
+        if len(word) > 3 and word.isalpha() and word not in stop and word not in terms:
+            terms.append(word)
+        if len(terms) >= 4:
+            break
+    if terms:
+        listed = ", ".join(terms)
+        questions.insert(2, f"This role mentions {listed}. Where have you applied that, and what was the outcome?")
+    else:
+        questions.insert(2, f"What would you want to know about success in {role} after the first 90 days?")
+
+    return {"questions": questions, "role": role, "count": len(questions)}

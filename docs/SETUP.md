@@ -26,6 +26,10 @@ Data persists in the `aura-data` volume (`/data` in the container).
 Logs: `docker compose logs -f aura`. Stop: `docker compose down`
 (add `-v` to wipe data too).
 
+Verify the UI is actually being served — `GET /` must return 200, not just
+`GET /api/health`. The image uses a different directory layout than a source
+checkout, so a bad `frontend/dist` path yields a healthy API with no UI.
+
 **Add the local LFM (optional, ~4 GB download):**
 
 ```bash
@@ -169,11 +173,16 @@ purpose `vision`.
 ## Verification checklist
 
 ```bash
-cd aura-os/backend && python3 -m unittest            # 25 tests, ~1s
-cd ../frontend && npx tsc --noEmit && npm run build  # typecheck + bundle
-python3 scripts/e2e_check.py                         # 44 live checks vs :8000
+cd backend && AURA_DATA_DIR="$(mktemp -d)" OLLAMA_BASE_URL=http://127.0.0.1:1 \
+  ../venv/bin/python -m unittest discover -s tests   # 344 tests
+cd ../frontend && npx tsc --noEmit && npx vitest run && npm run build
+python3 scripts/e2e_check.py                         # 101 live checks vs :8000
 curl -s localhost:8000/api/health                    # {"ok": true, ...}
 ```
+
+`AURA_DATA_DIR` is required for tests (it relocates DB, uploads and backups);
+`AURA_DB_PATH` alone is not enough. Full details and the CI gate list are in
+[TESTING.md](TESTING.md).
 
 ## Troubleshooting
 

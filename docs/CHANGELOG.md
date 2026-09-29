@@ -1,5 +1,166 @@
 # AURA OS — Changelog
 
+## Unreleased — deployment + integration audit pass
+
+A second pass driven by actually running the thing: building the Docker image,
+running the CI scripts, and driving the UI in a real browser. All of the
+`scripts/e2e_check.py` failures turned out to be real defects, not script noise.
+
+### Deployment (the image shipped with no UI)
+
+- **The container never served the frontend.** `main.py` resolved
+  `frontend/dist` as `Path(__file__).parent.parent.parent / …`, which is
+  correct in a source checkout (`<repo>/frontend/dist`) but resolves to
+  `/frontend/dist` in the image, where the assets are at `/app/frontend/dist`.
+  The container served the API and returned 404 for `/`. `_resolve_dist()` now
+  probes both layouts, honours `AURA_FRONTEND_DIST`, and verifies `index.html`
+  exists; it also rejects a crafted SPA path that escapes the dist directory.
+  Verified by building the image and asserting `GET /` returns 200 with assets.
+
+### Integration bugs (each silently broke a feature)
+
+- **`GET /tasks/overdue/list` returned the wrong key.** It returned
+  `{tasks: …}`, but `api.ts` declares `{overdue, count}`, `orchestrator` reads
+  `data.get("overdue")` during its memory harvest, and `e2e_check` asserts
+  `overdue`. The overdue list was therefore empty in the UI, in the plan
+  grounding, and in follow-up drafting.
+- **`POST /projects/{id}/milestones` did not exist.** `add_milestone()` was
+  written but never decorated, so the frontend's `api.projects.milestone()`
+  404'd. Now registered, with validation, plus `PATCH`/`DELETE` for a
+  milestone.
+- **Plugins loaded zero of them unless CWD was `backend/`.** `load_plugins()`
+  used the relative `Path("app/plugins")`. Discovery is now anchored to the
+  package directory.
+- **`POST /api/gateway/simulate` returned 500.** It read `e.event_id`, but
+  `emit_gateway()` returns a plain dict. `emit_gateway` now returns the new
+  event's id.
+- **`career.interview_questions` was three hardcoded strings.** Now generates a
+  role-aware set of 7 that folds in terms lifted from the job description.
+- **`scripts.save` still passed the args dict as `name`.** Fixed with a proper
+  adapter; the R0/R1 tool probe and the AST unbound-name sweep are both clean.
+- **Webhook validation allowed http only for loopback.** https is still
+  required for any remote target, so a self-hosted integration on the same box
+  works without letting cleartext leave the machine.
+
+### Hygiene
+
+- Removed the per-turn `DEBUG ORCH` prints. They ran on every chat turn and
+  dumped the first 50 characters of **every retrieved memory** to stdout, which
+  in Docker is the container log.
+- `scripts/e2e_check.py` now reports the failing source line; bare `assert`s
+  printed an empty message, hiding which step broke. Also updated two stale
+  assertions (the `kokoro` engine added in v1.15, and positional engine lookup)
+  and made the folder-watch test ask the server for its watch path instead of
+  hardcoding `<repo>/data/inbox` — that only worked when `AURA_DATA_DIR` was
+  unset.
+- Labelled 10 unlabelled `<select>` elements and 2 hidden file inputs found by
+  the browser accessibility pass.
+
+### Verification
+
+Backend 344/344 · frontend 175/175 · `tsc` clean · `npm run build` clean ·
+router eval 299/299 · agent eval 33/33 · `e2e_check.py` 101/101 (was 93/101) ·
+`prod_check.py` 11/11 · `pip-audit` clean · `npm audit --omit=dev` clean ·
+Docker image builds, serves API + UI, and passes the full smoke suite ·
+browser walkthrough green at 390/820/1600 px with no console errors.
+
+## Unreleased — correctness + security audit pass
+
+The backend suite is green again (344 tests). This pass fixed real defects
+rather than adding features; the security and correctness items are listed first.
+
+### Security
+
+- **`local-first` could send data to the cloud (privacy regression).**
+  `ModelRouter.chain()` appended `"cloud"` to the local-first chain whenever a
+  key was configured, so `hybrid`-style fallback leaked user content off-machine
+  while the UI still said "local-first". `chain()` now never puts cloud in
+  local-first, and no longer constructs a cloud client at all in that mode.
+- **Cloud grounding was unredacted.** `filter_cloud_memories` was imported by
+  the orchestrator but never called, so `sensitive`/`private` memories were sent
+  verbatim to the provider. Cloud turns now build a separate redacted message
+  set (the local model still sees everything), and `result.redacted_memories`
+  reports the count.
+- **Automations were persisted without validation.** `automations.create` wrote
+  any action config straight to the table, so a `terminal` action could hold
+  `rm -rf /` and a `webhook` action could hold `ftp://` or any non-https URL.
+  Actions are now validated before insert *and* on `PATCH` against the merged
+  config: webhook must be https, terminal must not classify as `dangerous`,
+  home ids must be `domain.object_id`, scripts must resolve.
+- **Home Assistant identifiers** are charset-validated before reaching the
+  gateway, so a metacharacter-laden `entity_id` can no longer be forwarded.
+- **The entire cloud chat path was dead.** `run_turn` referenced an undefined
+  `purpose` name inside the cloud branch; the `NameError` was swallowed and
+  every hybrid/cloud turn silently degraded to the builtin composer. Fixed, and
+  a non-streaming retry now covers gateways that reject or ignore `stream: true`.
+
+### Correctness
+
+- **Dead Hermes tools.** Nine registered tools pointed at functions that do not
+  exist (`scripts.list`/`save` → wrong module, `weather.now` → `now`, not
+  `current`; `system.undo` → `undo`, not `sync`; `home.entities` →
+  `list_entities`; `proactive.scan`, `briefing.now`, `system.backup`,
+  `scripts.run_script`) and silently failed at call time. All are wired to real
+  implementations.
+- **Positional-arg tool adapters.** `_lazy(mod, fn)` passes the whole args dict
+  as `fn`'s first parameter, so tools whose function takes a plain argument
+  (`web.fetch(url)`, `career.interview_questions(job_description, role)`,
+  `tasks.update`, `projects.update`) could never work. Each now has a real
+  adapter; `vision.look` accepts and validates `image_b64`.
+- **Undo did not cover creates or updates.** Only deletes were journaled, so
+  "undo that" after adding a task said "Nothing to undo". Task create/update
+  are now journaled; the undo preview reports the true total instead of
+  disagreeing with the apply response.
+- **Dry-run was a no-op wrapper.** `/api/hermes/tools/{name}/dry-run` and
+  `POST /api/automations/{id}/run?dry_run=true` returned a bare tool result and
+  — for automations — actually resolved *approvals*. Both now return
+  `{dry_run, result|fired, blocked}`, and `db.notify`/`comms.send` report the
+  side effects they withheld instead of silently succeeding.
+- **Event-triggered automations were unaudited.** Feed and file-watch triggers
+  have `next_run IS NULL`, so they bypassed `tick_automations` and called
+  `_fire_one` directly — never updating `last_run`/`success_count`. They now
+  route through `fire_event`, which shares the same bookkeeping as a scheduled
+  fire. Webhooks also gained HMAC-SHA256 signing and an idempotency key, and
+  failures now back off exponentially instead of retrying every tick.
+- **Two undefined-name bugs** that only fired on rare paths: `missions.py` used
+  `prefs` without importing it (every mission failed on its first step), and
+  `orchestrator.py` called `prefs.get(...)` when the import was aliased
+  `_prefs` (follow-up approvals were never created).
+- **`prefs.get()` was called with a second argument** in four places, raising
+  `TypeError` at runtime.
+- **Chat terminal commands were unusable.** A redundant R3 approval gate in
+  `run_turn` short-circuited every terminal request, and the composer then
+  reported "the command did not run" rather than that approval was pending.
+  `terminal.exec_command` remains the single audited safety boundary.
+- **`comms.send` deduplicates repeat sends** and previews before dedup, so a
+  dry run can no longer suppress the real send it was previewing.
+- Gateway inbound/outbound messages are now recorded in a dedicated
+  `gateway_events` table (the `/api/gateway/status` `events` feed previously
+  returned raw activity rows with no `platform`).
+- Three placeholder tools are implemented for real: `draft_followups`,
+  `prioritize_tasks`, `unread_count`.
+- `briefing.now` was rated R2 (external call), so running a briefing demanded
+  approval; it is R1 — it composes locally and notifies the owner only.
+- Client hang-up mid-stream now closes the upstream LLM connection instead of
+  leaking it (previously verified only by a test written against a
+  never-implemented tuple-yielding contract).
+- Blank/whitespace task titles are rejected; the terminal's `danger_reason()`
+  had an unreachable return inside its `for` loop that only checked the first
+  pattern.
+
+### Tests
+
+- Backend: 344/344 pass (was 47 failures at `8f04748`).
+- Frontend: 175/175 pass; `testTimeout` raised to 20s — a heavy `SettingsView`
+  render failed spuriously when the backend suite ran concurrently.
+- Router eval 299/299, agent eval 33/33 against real Ollama `llama3.1:8b`.
+- `agent_cases.json` case `undo` updated: it asserted the old behaviour where
+  creates were not undoable.
+- Two tests were corrected where they, not the code, were wrong:
+  `test_journey_followup_approval` (needed an overdue task to have anything to
+  approve) and `test_first_token_precedes_…` (asserted a tuple contract the
+  production code has never had).
+
 ## v1.15.0 — 2026-09-14 — Fortress hardening: origin guard, script library, drop-zone watch
 
 - **Cross-site request guard (security, important)**: with no login and

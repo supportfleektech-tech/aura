@@ -24,6 +24,7 @@ SCHEMA: dict[str, tuple[Any, str, Any]] = {
     "custom_model": ("", "str", 200),
     "cloud_temperature": (0.6, "float", (0.0, 2.0)),
     "cloud_max_tokens": (900, "int", (64, 8000)),
+    "cloud_reasoning": (False, "bool", None),
     "cloud_memory_policy": ("strict", "enum", ("strict", "relaxed")),
     "memory_auto_store": (True, "bool", None),
     "vision_enabled": (True, "bool", None),

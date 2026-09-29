@@ -1,8 +1,10 @@
 """AURA Model Router — provider-neutral inference layer.
 
-Routing order (local-first):
+Routing order (honoring privacy setting):
   1. Local LFM via Ollama (/api/chat) when reachable and capable.
   2. Cloud LLM when configured (OpenAI-compatible chat endpoint).
+     In local-first mode, cloud is appended as last-resort fallback
+     when a cloud key is configured, so model selection takes effect.
   3. Built-in AuraEngine — deterministic, retrieval-grounded composer that
      turns orchestrator tool results + memory context into useful answers.
      This guarantees AURA is fully operational with zero model downloads.
@@ -10,6 +12,7 @@ Routing order (local-first):
 Also exposes embeddings (Ollama -> hashed fallback) and capability probes
 used by System Status / diagnostics.
 """
+
 from __future__ import annotations
 
 import re
@@ -26,19 +29,44 @@ def conversational_messages(messages: list[dict], purpose: str = "chat") -> list
     if purpose != "chat":
         return messages
     choices = {
-        "ai_warmth": {"neutral": "Use a neutral, respectful tone.", "warm": "Be warm and approachable without flattery.", "supportive": "Be supportive, acknowledge difficulty without assuming feelings."},
-        "ai_humour": {"off": "Avoid jokes.", "light": "Use occasional light humour when appropriate.", "playful": "Use gentle playful humour, never at the user's expense."},
-        "ai_style": {"conversational": "Use natural conversational language and contractions, not canned greetings.", "professional": "Use clear professional language.", "direct": "Be direct: lead with the answer, avoid filler."},
-        "ai_pacing": {"concise": "Keep replies concise unless detail is requested.", "balanced": "Use balanced pacing: a short answer followed by useful detail.", "unhurried": "Use unhurried pacing, short paragraphs and one question at a time."},
+        "ai_warmth": {
+            "neutral": "Use a neutral, respectful tone.",
+            "warm": "Be warm and approachable without flattery.",
+            "supportive": "Be supportive, acknowledge difficulty without assuming feelings.",
+        },
+        "ai_humour": {
+            "off": "Avoid jokes.",
+            "light": "Use occasional light humour when appropriate.",
+            "playful": "Use gentle playful humour, never at the user's expense.",
+        },
+        "ai_style": {
+            "conversational": "Use natural conversational language and contractions, not canned greetings.",
+            "professional": "Use clear professional language.",
+            "direct": "Be direct: lead with the answer, avoid filler.",
+        },
+        "ai_pacing": {
+            "concise": "Keep replies concise unless detail is requested.",
+            "balanced": "Use balanced pacing: a short answer followed by useful detail.",
+            "unhurried": "Use unhurried pacing, short paragraphs and one question at a time.",
+        },
     }
-    tone = " ".join(options.get(prefs.get(key), options[prefs.SCHEMA[key][0]]) for key, options in choices.items())
-    policy = ("AURA conversational delivery: " + tone + " These are style preferences only. "
-              "Never claim feelings or consciousness, a human identity, or personal experiences. "
-              "Never fabricate actions, tool results, memories, or completed work; distinguish suggestions from verified actions. "
-              "Keep factual uncertainty explicit. Respect all existing grounding, approval and privacy rules; "
-              "style never overrides them. Avoid humour in serious or sensitive situations.")
+    tone = " ".join(
+        options.get(prefs.get(key), options[prefs.SCHEMA[key][0]])
+        for key, options in choices.items()
+    )
+    policy = (
+        "AURA conversational delivery: " + tone + " These are style preferences only. "
+        "Never claim feelings or consciousness, a human identity, or personal experiences. "
+        "Never fabricate actions, tool results, memories, or completed work; distinguish suggestions from verified actions. "
+        "Keep factual uncertainty explicit. Respect all existing grounding, approval and privacy rules; "
+        "style never overrides them. Avoid humour in serious or sensitive situations."
+    )
     result = [dict(m) for m in messages]
-    if result and result[0].get("role") == "system" and isinstance(result[0].get("content"), str):
+    if (
+        result
+        and result[0].get("role") == "system"
+        and isinstance(result[0].get("content"), str)
+    ):
         result[0]["content"] += "\n\n" + policy
     else:
         result.insert(0, {"role": "system", "content": policy})
@@ -67,9 +95,15 @@ class OllamaClient:
         except Exception as e:
             return False, str(e)[:80]
 
-    def chat(self, messages: list[dict], model: str | None = None,
-             stream_cb: Callable[[str], None] | None = None, timeout: float = 120.0,
-             purpose: str = "chat", images: list[str] | None = None) -> str:
+    def chat(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        stream_cb: Callable[[str], None] | None = None,
+        timeout: float = 120.0,
+        purpose: str = "chat",
+        images: list[str] | None = None,
+    ) -> str:
         out: list[str] = []
         stream = self.chat_stream(messages, model, timeout, purpose, images)
         try:
@@ -81,26 +115,40 @@ class OllamaClient:
             stream.close()
         return "".join(out)
 
-    def chat_stream(self, messages: list[dict], model: str | None = None,
-                    timeout: float = 120.0, purpose: str = "chat",
-                    images: list[str] | None = None) -> Iterator[str]:
+    def chat_stream(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        timeout: float = 120.0,
+        purpose: str = "chat",
+        images: list[str] | None = None,
+    ) -> Iterator[str]:
         if db.DRY_RUN:
             db.blocked("llm: ollama chat skipped")
             yield "[dry-run: LLM response withheld]"
             return
         messages = [dict(m) for m in conversational_messages(messages, purpose)]
         if images:
-            messages[-1]["images"] = [u.split(",", 1)[-1] if "base64," in u else u for u in images[:4]]
-        payload = {"model": model or self.model, "messages": messages, "stream": True,
-                   "options": {"temperature": 0.6}}
+            messages[-1]["images"] = [
+                u.split(",", 1)[-1] if "base64," in u else u for u in images[:4]
+            ]
+        payload = {
+            "model": model or self.model,
+            "messages": messages,
+            "stream": True,
+            "options": {"temperature": 0.6},
+        }
+        import json as _j
+
         stats: dict = {}
         t0 = time.time()
-        with httpx.stream("POST", f"{self.base}/api/chat", json=payload, timeout=timeout) as r:
+        with httpx.stream(
+            "POST", f"{self.base}/api/chat", json=payload, timeout=timeout
+        ) as r:
             r.raise_for_status()
             for line in r.iter_lines():
                 if not line or not line.strip().startswith("{"):
                     continue
-                import json as _j
                 d = _j.loads(line)
                 if d.get("error"):
                     raise RuntimeError("Ollama generation failed")
@@ -112,20 +160,37 @@ class OllamaClient:
                     break
             else:
                 raise RuntimeError("Ollama stream ended before completion")
-        costs.record("ollama", payload["model"], purpose, int(stats.get("prompt_eval_count", 0) or 0),
-                     int(stats.get("eval_count", 0) or 0), int((time.time() - t0) * 1000))
+        costs.record(
+            "ollama",
+            payload["model"],
+            purpose,
+            int(stats.get("prompt_eval_count", 0) or 0),
+            int(stats.get("eval_count", 0) or 0),
+            int((time.time() - t0) * 1000),
+        )
 
     def embed(self, text: str, model: str | None = None) -> list[float] | None:
         try:
-            r = httpx.post(f"{self.base}/api/embeddings",
-                           json={"model": model or prefs.get("ollama_embed_model")
-                                 or config.OLLAMA_EMBED_MODEL, "prompt": text}, timeout=15)
+            r = httpx.post(
+                f"{self.base}/api/embeddings",
+                json={
+                    "model": model
+                    or prefs.get("ollama_embed_model")
+                    or config.OLLAMA_EMBED_MODEL,
+                    "prompt": text,
+                },
+                timeout=15,
+            )
             if r.status_code == 200:
                 return list(r.json().get("embedding", []))
         except Exception:
             pass
         return None
-_SECRET_RE = re.compile(r'(?i)("?(?:password|passwd|api[_-]?key|apikey|token|secret|smtp[_-]?pass|bot[_-]?token|webhook[_-]?url|authorization)"?\s*[:=]\s*"?)([^",}\s]{3,})')
+
+
+_SECRET_RE = re.compile(
+    r'(?i)("?(?:password|passwd|api[_-]?key|apikey|token|secret|smtp[_-]?pass|bot[_-]?token|webhook[_-]?url|authorization)"?\s*[:=]\s*"?)([^",}\s]{3,})'
+)
 
 
 def scrub_secrets(text: str) -> str:
@@ -133,7 +198,23 @@ def scrub_secrets(text: str) -> str:
     return _SECRET_RE.sub(r"\1***", text or "")
 
 
-def filter_cloud_memories(memories: list[dict] | None, policy: str | None = None) -> tuple[list[dict], int]:
+def _attach_images(messages: list[dict], images: list[str]) -> list[dict]:
+    """Convert message list to multimodal format with image_url parts. Returns new list."""
+    messages = [dict(m) for m in messages]
+    last = messages[-1]
+    parts: list[dict] = (
+        [{"type": "text", "text": last.get("content", "")}]
+        if isinstance(last.get("content"), str)
+        else list(last.get("content") or [])
+    )
+    parts += [{"type": "image_url", "image_url": {"url": u}} for u in images[:4]]
+    last["content"] = parts
+    return messages
+
+
+def filter_cloud_memories(
+    memories: list[dict] | None, policy: str | None = None
+) -> tuple[list[dict], int]:
     """Keep only shareable memories for cloud grounding. Returns (kept, redacted_count).
 
     strict (default): withhold sensitive + private. relaxed: withhold private only.
@@ -159,9 +240,15 @@ class CloudClient:
     Only ever called when the privacy setting allows it AND a key is configured.
     Callers must pass pre-redacted messages (see filter_cloud_memories)."""
 
-    def __init__(self, base: str | None = None, api_key: str | None = None,
-                 model: str | None = None, provider: str | None = None,
-                 temperature: float | None = None, max_tokens: int | None = None):
+    def __init__(
+        self,
+        base: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ):
         self._base, self._key, self._model = base, api_key, model
         self._provider = provider
         self._temp, self._max = temperature, max_tokens
@@ -218,54 +305,175 @@ class CloudClient:
     def configured(self) -> bool:
         return bool(self.key and self.model and self.base)
 
-    def chat(self, messages: list[dict], stream_cb: Callable[[str], None] | None = None,
-             timeout: float = 60.0, max_tokens: int | None = None, purpose: str = "chat",
-             images: list[str] | None = None) -> str:
+    def chat(
+        self,
+        messages: list[dict],
+        stream_cb: Callable[[str], None] | None = None,
+        timeout: float = 60.0,
+        max_tokens: int | None = None,
+        purpose: str = "chat",
+        images: list[str] | None = None,
+    ) -> str:
         if db.DRY_RUN:
             db.blocked("llm: cloud chat skipped")
             return "[dry-run: LLM response withheld]"
         messages = conversational_messages(messages, purpose)
         if images:
-            messages = [dict(m) for m in messages]
-            last = messages[-1]
-            parts: list[dict] = ([{"type": "text", "text": last.get("content", "")}]
-                                 if isinstance(last.get("content"), str) else list(last.get("content") or []))
-            parts += [{"type": "image_url", "image_url": {"url": u}} for u in images[:4]]
-            last["content"] = parts
+            messages = _attach_images(messages, images)
         allowed, why = costs.check()
         if not allowed:
-            costs.record(self.provider, self.model, purpose, 0, 0, 0, ok=False, error=why)
+            costs.record(
+                self.provider, self.model, purpose, 0, 0, 0, ok=False, error=why
+            )
             raise costs.BudgetExceeded(why)
         t0 = time.time()
         try:
-            r = httpx.post(f"{self.base}/chat/completions",
-                           headers=self.headers(),
-                           json={"model": self.model, "messages": messages,
-                                 "temperature": self.temperature,
-                                 "max_tokens": max_tokens or self.max_tokens},
-                           timeout=timeout)
+            r = httpx.post(
+                f"{self.base}/chat/completions",
+                headers=self.headers(),
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": self.temperature,
+                    "max_tokens": max_tokens or self.max_tokens,
+                },
+                timeout=timeout,
+            )
             r.raise_for_status()
             d = r.json()
         except Exception as e:
-            costs.record(self.provider, self.model, purpose, 0, 0,
-                         int((time.time() - t0) * 1000), ok=False,
-                         error=f"{type(e).__name__}: {e}"[:200])
+            costs.record(
+                self.provider,
+                self.model,
+                purpose,
+                0,
+                0,
+                int((time.time() - t0) * 1000),
+                ok=False,
+                error=f"{type(e).__name__}: {e}"[:200],
+            )
             raise
-        text = (((d.get("choices") or [{}])[0].get("message") or {}).get("content")) or ""
+        text = (
+            ((d.get("choices") or [{}])[0].get("message") or {}).get("content")
+        ) or ""
         u = d.get("usage", {}) or {}
-        costs.record(self.provider, self.model, purpose, int(u.get("prompt_tokens", 0) or 0),
-                     int(u.get("completion_tokens", 0) or 0), int((time.time() - t0) * 1000))
+        costs.record(
+            self.provider,
+            self.model,
+            purpose,
+            int(u.get("prompt_tokens", 0) or 0),
+            int(u.get("completion_tokens", 0) or 0),
+            int((time.time() - t0) * 1000),
+        )
         if text and stream_cb:
             stream_cb(text)
         return text
 
+    def chat_stream(
+        self,
+        messages: list[dict],
+        timeout: float = 120.0,
+        max_tokens: int | None = None,
+        purpose: str = "chat",
+        reasoning: bool = False,
+        images: list[str] | None = None,
+    ) -> Iterator[str]:
+        """Stream a cloud chat completion. Yields content tokens, then
+        optionally yields reasoning tokens if the model supports it."""
+        if db.DRY_RUN:
+            db.blocked("llm: cloud chat_stream skipped")
+            yield "[dry-run: LLM response withheld]"
+            return
+        messages = conversational_messages(messages, purpose)
+        if images:
+            messages = _attach_images(messages, images)
+        allowed, why = costs.check()
+        if not allowed:
+            costs.record(
+                self.provider, self.model, purpose, 0, 0, 0, ok=False, error=why
+            )
+            raise costs.BudgetExceeded(why)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": max_tokens or self.max_tokens,
+            "stream": True,
+        }
+        if reasoning:
+            payload["reasoning"] = {"effort": "medium"}
+        import json as _j
 
-def get_cloud_client(provider: str | None = None, model: str | None = None,
-                     api_key: str | None = None) -> CloudClient:
+        t0 = time.time()
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base}/chat/completions",
+                headers=self.headers(),
+                json=payload,
+                timeout=timeout,
+            ) as r:
+                r.raise_for_status()
+                last_chunk: dict = {}
+                for line in r.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    chunk_str = line[6:].strip()
+                    if chunk_str == "[DONE]":
+                        break
+                    try:
+                        last_chunk = _j.loads(chunk_str)
+                    except (ValueError, TypeError):
+                        continue
+                    delta = (last_chunk.get("choices") or [{}])[0].get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        yield content
+                u = last_chunk.get("usage", {}) if isinstance(last_chunk, dict) else {}
+                costs.record(
+                    self.provider,
+                    self.model,
+                    purpose,
+                    int(u.get("prompt_tokens", 0) or 0),
+                    int(u.get("completion_tokens", 0) or 0),
+                    int((time.time() - t0) * 1000),
+                )
+        except httpx.HTTPStatusError as e:
+            costs.record(
+                self.provider,
+                self.model,
+                purpose,
+                0,
+                0,
+                int((time.time() - t0) * 1000),
+                ok=False,
+                error=f"HTTPStatusError: {e.response.status_code}"[:200],
+            )
+            raise
+        except Exception as e:
+            costs.record(
+                self.provider,
+                self.model,
+                purpose,
+                0,
+                0,
+                int((time.time() - t0) * 1000),
+                ok=False,
+                error=f"{type(e).__name__}: {e}"[:200],
+            )
+            raise
+
+
+def get_cloud_client(
+    provider: str | None = None, model: str | None = None, api_key: str | None = None
+) -> CloudClient:
     """Build a cloud client from effective settings, with optional overrides
     (used by the connection tester so candidates can be tried before saving)."""
-    return CloudClient(provider=provider, model=model or None,
-                       api_key=api_key if api_key is not None else None)
+    return CloudClient(
+        provider=provider,
+        model=model or None,
+        api_key=api_key if api_key is not None else None,
+    )
 
 
 # -- OpenRouter model catalog (public endpoint, cached; curated fallback) ------
@@ -273,30 +481,204 @@ def get_cloud_client(provider: str | None = None, model: str | None = None,
 # Curated free-tier presets, verified live 2026-09-09 (21 free of 431). The live catalog is authoritative —
 # free models rotate; GET /api/cloud/models refreshes from OpenRouter.
 OPENROUTER_FREE_PRESETS = [
-    {"id": "google/gemma-4-31b-it:free", "name": "Gemma 4 31B", "context_length": 262144,
-     "note": "multimodal general"},
-    {"id": "openrouter/free", "name": "Free Models Router", "context_length": 200000,
-     "note": "auto-picks a free model"},
-    {"id": "nvidia/nemotron-3-ultra-550b-a55b:free", "name": "Nemotron 3 Ultra", "context_length": 1000000,
-     "note": "1M-context reasoning"},
-    {"id": "nvidia/nemotron-3-super-120b-a12b:free", "name": "Nemotron 3 Super", "context_length": 262144,
-     "note": "long-context reasoning"},
-    {"id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "name": "Nemotron 3 Omni", "context_length": 256000,
-     "note": "multimodal reasoning"},
-    {"id": "nvidia/nemotron-3.5-lightning:free", "name": "Nemotron 3.5 Lightning", "context_length": 1000000,
-     "note": "fast 1M general"},
-    {"id": "google/gemma-4-26b-a4b-it:free", "name": "Gemma 4 26B", "context_length": 262144,
-     "note": "fast multimodal"},
-    {"id": "thinkingmachines/inkling:free", "name": "Inkling", "context_length": 1048576,
-     "note": "1M general"},
-    {"id": "cohere/north-mini-code:free", "name": "North Mini Code", "context_length": 256000,
-     "note": "coding"},
-    {"id": "poolside/laguna-s-2.1:free", "name": "Laguna S 2.1", "context_length": 262144,
-     "note": "coding agent"},
-    {"id": "poolside/laguna-xs-2.1:free", "name": "Laguna XS 2.1", "context_length": 262144,
-     "note": "fast coding"},
-    {"id": "liquid/lfm-2.5-2.6b:free", "name": "LFM 2.5 2.6B", "context_length": 65536,
-     "note": "tiny + fast"},
+    {
+        "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "name": "Nemotron 3 Ultra",
+        "context_length": 1000000,
+        "note": "1M-context reasoning",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "nvidia/nemotron-3.5-lightning:free",
+        "name": "Nemotron 3.5 Lightning",
+        "context_length": 1000000,
+        "note": "fast 1M general",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "nvidia/nemotron-3-super-120b-a12b:free",
+        "name": "Nemotron 3 Super",
+        "context_length": 262144,
+        "note": "long-context reasoning",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "name": "Nemotron 3 Omni",
+        "context_length": 256000,
+        "note": "multimodal reasoning",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": True,
+    },
+    {
+        "id": "nvidia/nemotron-3.5-content-safety:free",
+        "name": "Nemotron 3.5 Safety",
+        "context_length": 128000,
+        "note": "vision + content safety",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": False,
+    },
+    {
+        "id": "google/gemma-4-31b-it:free",
+        "name": "Gemma 4 31B",
+        "context_length": 262144,
+        "note": "multimodal general",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": True,
+    },
+    {
+        "id": "google/gemma-4-26b-a4b-it:free",
+        "name": "Gemma 4 26B",
+        "context_length": 262144,
+        "note": "fast multimodal",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": True,
+    },
+    {
+        "id": "qwen/qwen3.8-27b:free",
+        "name": "Qwen 3.8 27B",
+        "context_length": 262144,
+        "note": "multimodal reasoning",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": True,
+    },
+    {
+        "id": "thinkingmachines/inkling:free",
+        "name": "Inkling",
+        "context_length": 1048576,
+        "note": "1M general",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": True,
+    },
+    {
+        "id": "thinkingmachines/inkling-small:free",
+        "name": "Inkling Small",
+        "context_length": 1048576,
+        "note": "1M multimodal",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": True,
+    },
+    {
+        "id": "dots-studio/dots-3-note-preview:free",
+        "name": "Dots 3 Note",
+        "context_length": 512000,
+        "note": "vision reasoning",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": False,
+    },
+    {
+        "id": "openrouter/free",
+        "name": "Free Models Router",
+        "context_length": 200000,
+        "note": "auto-picks a free model",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": False,
+    },
+    {
+        "id": "cohere/north-mini-code:free",
+        "name": "North Mini Code",
+        "context_length": 256000,
+        "note": "coding",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "poolside/laguna-s-2.1:free",
+        "name": "Laguna S 2.1",
+        "context_length": 262144,
+        "note": "coding agent",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "poolside/laguna-xs-2.1:free",
+        "name": "Laguna XS 2.1",
+        "context_length": 262144,
+        "note": "fast coding",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "inclusionai/ling-3.0-flash-fin:free",
+        "name": "Ling 3.0 Flash Fin",
+        "context_length": 262144,
+        "note": "finance reasoning",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "inclusionai/ling-3.0-flash-sante:free",
+        "name": "Ling 3.0 Flash Sante",
+        "context_length": 262144,
+        "note": "health reasoning",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "inclusionai/ling-3.0-flash-vl:free",
+        "name": "Ling 3.0 Flash VL",
+        "context_length": 262144,
+        "note": "vision reasoning",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": True,
+    },
+    {
+        "id": "liquid/lfm-2.5-2.6b:free",
+        "name": "LFM 2.5 2.6B",
+        "context_length": 65536,
+        "note": "tiny + fast",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
+    {
+        "id": "nex-agi/nex-n2.5-pro:free",
+        "name": "NEX N2.5 Pro",
+        "context_length": 262144,
+        "note": "vision reasoning",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": False,
+    },
+    {
+        "id": "nex-agi/nex-n2.5-mini:free",
+        "name": "NEX N2.5 Mini",
+        "context_length": 262144,
+        "note": "vision reasoning",
+        "reasoning": True,
+        "vision": True,
+        "multimodal": False,
+    },
+    {
+        "id": "z-ai/glm-5.2:free",
+        "name": "GLM 5.2",
+        "context_length": 32768,
+        "note": "reasoning",
+        "reasoning": True,
+        "vision": False,
+        "multimodal": False,
+    },
 ]
 
 _catalog_cache: dict = {"at": 0.0, "models": []}
@@ -307,21 +689,52 @@ def _norm_model(m: dict) -> dict:
     mid = m.get("id", "")
     price = m.get("pricing") or {}
     try:
-        free = float(price.get("prompt", "1") or 0) == 0 and float(price.get("completion", "1") or 0) == 0
+        free = (
+            float(price.get("prompt", "1") or 0) == 0
+            and float(price.get("completion", "1") or 0) == 0
+        )
     except (TypeError, ValueError):
         free = mid.endswith(":free")
-    return {"id": mid, "name": m.get("name", mid), "context_length": m.get("context_length", 0),
-            "free": free or mid.endswith(":free")}
+    arch = m.get("architecture") or {}
+    modality = arch.get("modality", "")
+    params = m.get("supported_parameters") or []
+    param_str = (
+        ",".join(str(p) for p in params) if isinstance(params, list) else str(params)
+    )
+    has_reasoning = "reasoning" in param_str.lower() or "thinking" in param_str.lower()
+    has_image = "image" in modality
+    has_video = "video" in modality
+    has_audio = "audio" in modality
+    return {
+        "id": mid,
+        "name": m.get("name", mid),
+        "context_length": m.get("context_length", 0),
+        "free": free or mid.endswith(":free"),
+        "reasoning": has_reasoning,
+        "vision": has_image,
+        "multimodal": has_image or has_video or has_audio,
+        "modality": modality,
+    }
 
 
 def fetch_openrouter_models(refresh: bool = False, timeout: float = 20.0) -> dict:
     """Live OpenRouter catalog (public, no key needed). Falls back to curated
     presets when offline. Never raises — returns {models, cached, stale, ...}."""
     import time as _t
+
     now = _t.time()
-    if not refresh and _catalog_cache["models"] and now - _catalog_cache["at"] < CATALOG_TTL_S:
-        return {"models": _catalog_cache["models"], "cached": True, "stale": False,
-                "count": len(_catalog_cache["models"]), "updated_at": _catalog_cache["at"]}
+    if (
+        not refresh
+        and _catalog_cache["models"]
+        and now - _catalog_cache["at"] < CATALOG_TTL_S
+    ):
+        return {
+            "models": _catalog_cache["models"],
+            "cached": True,
+            "stale": False,
+            "count": len(_catalog_cache["models"]),
+            "updated_at": _catalog_cache["at"],
+        }
     try:
         r = httpx.get(f"{config.OPENROUTER_BASE_URL}/models", timeout=timeout)
         r.raise_for_status()
@@ -331,43 +744,87 @@ def fetch_openrouter_models(refresh: bool = False, timeout: float = 20.0) -> dic
         models.sort(key=lambda m: (not m["free"], m["id"]))
         if models:
             _catalog_cache.update({"at": now, "models": models})
-            return {"models": models, "cached": False, "stale": False,
-                    "count": len(models), "updated_at": now}
+            return {
+                "models": models,
+                "cached": False,
+                "stale": False,
+                "count": len(models),
+                "updated_at": now,
+            }
     except Exception as e:
         err = f"{type(e).__name__}: {str(e)[:120]}"
     else:
         err = "empty catalog"
     if _catalog_cache["models"]:
-        return {"models": _catalog_cache["models"], "cached": True, "stale": True,
-                "count": len(_catalog_cache["models"]), "updated_at": _catalog_cache["at"],
-                "error": err}
+        return {
+            "models": _catalog_cache["models"],
+            "cached": True,
+            "stale": True,
+            "count": len(_catalog_cache["models"]),
+            "updated_at": _catalog_cache["at"],
+            "error": err,
+        }
     fb = [{**m, "free": True} for m in OPENROUTER_FREE_PRESETS]
-    return {"models": fb, "cached": False, "stale": True, "count": len(fb),
-            "updated_at": 0.0, "error": err,
-            "note": "offline — curated presets; connect to refresh the live list"}
+    return {
+        "models": fb,
+        "cached": False,
+        "stale": True,
+        "count": len(fb),
+        "updated_at": 0.0,
+        "error": err,
+        "note": "offline — curated presets; connect to refresh the live list",
+    }
 
 
-def test_cloud(provider: str | None = None, model: str | None = None,
-               api_key: str | None = None, timeout: float = 25.0) -> dict:
+def test_cloud(
+    provider: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 25.0,
+) -> dict:
     """Try a minimal completion through saved config or candidate overrides.
     Never echoes the key. Returns {ok, latency_ms, model, provider, error?}."""
     t0 = time.time()
     client = get_cloud_client(provider, model, api_key)
     if not client.configured():
-        missing = [n for n, v in (("api key", client.key), ("model", client.model),
-                                  ("base url", client.base)) if not v]
-        return {"ok": False, "provider": client.provider, "model": client.model,
-                "error": f"not configured — missing: {', '.join(missing)}"}
+        missing = [
+            n
+            for n, v in (
+                ("api key", client.key),
+                ("model", client.model),
+                ("base url", client.base),
+            )
+            if not v
+        ]
+        return {
+            "ok": False,
+            "provider": client.provider,
+            "model": client.model,
+            "error": f"not configured — missing: {', '.join(missing)}",
+        }
     try:
-        text = client.chat([{"role": "user", "content": "Reply with the single word: ok"}],
-                           timeout=timeout, max_tokens=8, purpose="test")
+        text = client.chat(
+            [{"role": "user", "content": "Reply with the single word: ok"}],
+            timeout=timeout,
+            max_tokens=8,
+            purpose="test",
+        )
     except Exception as e:
-        return {"ok": False, "provider": client.provider, "model": client.model,
-                "latency_ms": max(1, int((time.time() - t0) * 1000)),
-                "error": f"{type(e).__name__}: {str(e)[:200]}"}
+        return {
+            "ok": False,
+            "provider": client.provider,
+            "model": client.model,
+            "latency_ms": max(1, int((time.time() - t0) * 1000)),
+            "error": f"{type(e).__name__}: {str(e)[:200]}",
+        }
     ms = max(1, int((time.time() - t0) * 1000))
-    return {"ok": bool(text.strip()), "provider": client.provider, "model": client.model,
-            "latency_ms": ms, "reply": text.strip()[:60]}
+    return {
+        "ok": bool(text.strip()),
+        "provider": client.provider,
+        "model": client.model,
+        "latency_ms": ms,
+        "reply": text.strip()[:60],
+    }
 
 
 class BuiltinEngine:
@@ -376,26 +833,50 @@ class BuiltinEngine:
 
     name = "aura-builtin-1.0"
 
-    def compose(self, user_text: str, intent: str, plan: list[dict],
-                tool_results: dict[str, Any], memories: list[dict], entities: dict,
-                history: list[dict] | None = None, summary: str = "") -> str:
+    def compose(
+        self,
+        user_text: str,
+        intent: str,
+        plan: list[dict],
+        tool_results: dict[str, Any],
+        memories: list[dict],
+        entities: dict,
+        history: list[dict] | None = None,
+        summary: str = "",
+    ) -> str:
         parts: list[str] = []
         if intent == "greet":
-            return ("Hello! I'm ready. You can ask me to **plan your day**, **review client workload**, "
-                    "**optimize your resume**, **log a journal entry**, or **search memory** — or just talk.")
+            return (
+                "Hello! I'm ready. You can ask me to **plan your day**, **review client workload**, "
+                "**optimize your resume**, **log a journal entry**, or **search memory** — or just talk."
+            )
         if intent == "plan_day":
             return self._plan_day(tool_results)
         if intent == "client_review":
             return self._client_review(tool_results)
         if intent == "task_create":
-            made = [t for t in (tool_results.get("tasks_created", []) or []) if isinstance(t, dict)]
+            made = [
+                t
+                for t in (tool_results.get("tasks_created", []) or [])
+                if isinstance(t, dict)
+            ]
             titles = [t.get("title", "") for t in made if t.get("title")]
             if len(made) == 1 and titles:
-                return f"Done — added **{titles[0][:100]}** to your inbox." + self._mem_note(memories)
+                return (
+                    f"Done — added **{titles[0][:100]}** to your inbox."
+                    + self._mem_note(memories)
+                )
             n = len(made)
-            return f"Done — I created **{n} task{'s' if n!=1 else ''}** and added {'them' if n!=1 else 'it'} to your inbox." + self._mem_note(memories)
+            return (
+                f"Done — I created **{n} task{'s' if n != 1 else ''}** and added {'them' if n != 1 else 'it'} to your inbox."
+                + self._mem_note(memories)
+            )
         if intent == "task_toggle":
-            upd = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            upd = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             if upd.get("matched"):
                 icon = "✅" if upd.get("status") == "completed" else "🔄"
                 return f"{icon} Done — **{upd.get('title', 'task')}** is now *{upd.get('status', 'updated')}*."
@@ -407,7 +888,9 @@ class BuiltinEngine:
         if intent == "memory_search":
             return self._memory_answer(memories, user_text)
         if intent == "memory_store":
-            return "Saved to memory. I'll recall it in future conversations and planning."
+            return (
+                "Saved to memory. I'll recall it in future conversations and planning."
+            )
         if intent == "resume_help":
             return self._resume_help(tool_results, entities)
         if intent == "interview_prep":
@@ -417,14 +900,24 @@ class BuiltinEngine:
         if intent == "health_log":
             return "Logged. Your Personal Life panel and insights are updated."
         if intent == "sleep_log":
-            s1 = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            s1 = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             if s1.get("hours"):
-                span = f" ({s1['bedtime']} \u2192 {s1['wake_at']})" if s1.get("bedtime") else ""
+                span = (
+                    f" ({s1['bedtime']} \u2192 {s1['wake_at']})"
+                    if s1.get("bedtime")
+                    else ""
+                )
                 q = f" Quality: {s1['quality']}." if s1.get("quality") else ""
                 return f"Logged **{float(s1['hours']):.1f}h** of sleep{span}.{q} Your dashboard insights are updated."
             return "How long did you sleep? e.g. `slept 11pm to 6am` or `log sleep 7.5 hours`."
         if intent == "journal":
-            return "Journaled. I've kept the reflection in your private Personal domain."
+            return (
+                "Journaled. I've kept the reflection in your private Personal domain."
+            )
         if intent == "finance":
             return self._finance(tool_results, entities)
         if intent == "system_status":
@@ -434,12 +927,20 @@ class BuiltinEngine:
         if intent == "ollama_models":
             return self._ollama_models(tool_results)
         if intent == "ollama_switch":
-            sw = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            sw = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             if sw.get("ok"):
                 return f"Done — local {sw.get('role', 'chat')} generation now uses **{sw.get('model')}**. Say “system status” to confirm the switch."
             return f"I couldn't switch models: {sw.get('error', 'unknown error')}."
         if intent == "feed_follow":
-            ff = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            ff = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             if ff.get("id"):
                 verb = "already followed" if ff.get("already_existed") else "following"
                 return f"Feed {verb} — **{ff.get('title', 'untitled')}** ({ff.get('items', 0)} new items pulled). It will refresh automatically and can trigger automations."
@@ -451,45 +952,79 @@ class BuiltinEngine:
         if intent == "help":
             return self._help()
         if intent == "project_create":
-            p = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            p = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             return f"Created project **{p.get('name', 'Untitled')}**. Open Clients & Projects to set the deadline, milestones, and progress."
         if intent == "client_create":
-            c = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            c = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             return f"Added client **{c.get('name', 'Untitled')}**. Ask me for a meeting brief anytime, e.g. meeting prep for them."
         if intent == "backup_run":
-            b = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            b = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             if b.get("ok"):
                 kb = (b.get("size_bytes", 0) or 0) / 1024
                 return f"Backup complete: **{b.get('file', 'snapshot')}** ({kb:.0f} KB, sha256 `{b.get('sha256', '')[:12]}...`). Integrity recorded in Backup Manager."
             return f"Backup failed: {b.get('error', 'unknown error')}. Nothing was deleted - retry from Clients, Backup tab."
         if intent == "meeting_prep":
-            mp = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            mp = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             who = mp.get("who", "your contact")
             lines = [f"**Meeting brief - {who}**", ""]
             mems = mp.get("memories", []) or []
             if mems:
                 lines.append("What I remember:")
-                lines += [f"- **{(m.get('title') or '')[:60]}** - {(m.get('content') or '')[:130]}" for m in mems[:4]]
+                lines += [
+                    f"- **{(m.get('title') or '')[:60]}** - {(m.get('content') or '')[:130]}"
+                    for m in mems[:4]
+                ]
                 lines.append("")
             tasks = mp.get("open_tasks", []) or []
             if tasks:
                 lines.append("Open items touching them:")
-                lines += [f"- **{t.get('title', '')}** ({t.get('status', '')})" for t in tasks[:5]]
+                lines += [
+                    f"- **{t.get('title', '')}** ({t.get('status', '')})"
+                    for t in tasks[:5]
+                ]
             else:
                 lines.append("No open tasks mention them - a clean slate.")
             lines += ["", "Want me to draft an agenda or a follow-up afterwards?"]
             return "\n".join(lines)
         if intent == "automation":
-            s1 = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            s1 = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             autos = s1.get("automations", []) or []
             if not autos:
                 return "No automations yet. Open the Automation Center to create scheduled reminders, briefs, or backups."
             lines = ["**Your automations:**", ""]
             for a in autos[:10]:
-                okc, failc = (a.get("success_count", 0) or 0), (a.get("fail_count", 0) or 0)
+                okc, failc = (
+                    (a.get("success_count", 0) or 0),
+                    (a.get("fail_count", 0) or 0),
+                )
                 rate = f"{round(okc / (okc + failc) * 100)}%" if (okc + failc) else "-"
-                lines.append(f"- **{a.get('name', '')}** - {a.get('status', '')} - {a.get('action_kind', '')} {a.get('trigger_kind', '')} - success {rate}")
-            lines += ["", "Use **Run now** in the Automation Center to fire one immediately."]
+                lines.append(
+                    f"- **{a.get('name', '')}** - {a.get('status', '')} - {a.get('action_kind', '')} {a.get('trigger_kind', '')} - success {rate}"
+                )
+            lines += [
+                "",
+                "Use **Run now** in the Automation Center to fire one immediately.",
+            ]
             return "\n".join(lines)
         if intent == "email_check":
             return self._email_check(tool_results)
@@ -498,19 +1033,33 @@ class BuiltinEngine:
         if intent == "calendar_create":
             return self._calendar_create(tool_results)
         if intent == "briefing":
-            s1 = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            s1 = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             out = (s1.get("output") or "").strip()
             if out:
-                return out + f"\n\n_Drafted in {s1.get('ms', 0)}ms via {s1.get('model', '?')}._"
+                return (
+                    out
+                    + f"\n\n_Drafted in {s1.get('ms', 0)}ms via {s1.get('model', '?')}._"
+                )
             return "I couldn't generate a briefing right now. Try again in a moment."
         if intent == "gateway":
-            rows = db.q("SELECT platform, status, account FROM integrations WHERE user_id=1")
+            rows = db.q(
+                "SELECT platform, status, account FROM integrations WHERE user_id=1"
+            )
             lines = ["**Gateway status:**", ""]
             for g in rows:
                 dot = "online" if g["status"] == "connected" else "offline"
                 acc = (f" - {g['account']}") if g["account"] else ""
-                lines.append(f"[{dot}] **{g['platform'].capitalize()}** - {g['status']}{acc}")
-            lines += ["", "Open Multi-Platform to connect, test, or simulate inbound messages."]
+                lines.append(
+                    f"[{dot}] **{g['platform'].capitalize()}** - {g['status']}{acc}"
+                )
+            lines += [
+                "",
+                "Open Multi-Platform to connect, test, or simulate inbound messages.",
+            ]
             return "\n".join(lines)
         if intent == "voice_note":
             return "Voice is ready - tap the microphone and speak. I'll transcribe, act, and can read the answer back. See Voice & Audio for controls."
@@ -519,7 +1068,11 @@ class BuiltinEngine:
         if intent == "mission_status":
             return self._mission_status(tool_results)
         if intent == "undo":
-            s1 = tool_results.get("s1", {}) if isinstance(tool_results.get("s1"), dict) else {}
+            s1 = (
+                tool_results.get("s1", {})
+                if isinstance(tool_results.get("s1"), dict)
+                else {}
+            )
             done = s1.get("undone", []) or []
             if not done:
                 return "Nothing to undo — no recent changes on record."
@@ -527,33 +1080,62 @@ class BuiltinEngine:
             for u in done:
                 lines.append(f"- {u.get('result', u.get('summary', ''))}")
             if s1.get("remaining"):
-                lines.append(f"\n({s1['remaining']} earlier change(s) still on record — say **undo** again.)")
+                lines.append(
+                    f"\n({s1['remaining']} earlier change(s) still on record — say **undo** again.)"
+                )
             return "\n".join(lines)
         if intent == "general_ask" and not memories and (history or summary):
             topic = ""
             if summary:
-                topic = summary.split(";")[0].replace("Previously: ", "").replace("Topic: ", "")[:140]
+                topic = (
+                    summary.split(";")[0]
+                    .replace("Previously: ", "")
+                    .replace("Topic: ", "")[:140]
+                )
             if not topic and history:
-                topic = next(((h.get("content") or "") for h in history if h.get("role") == "user"), "")[:140]
+                topic = next(
+                    (
+                        (h.get("content") or "")
+                        for h in history
+                        if h.get("role") == "user"
+                    ),
+                    "",
+                )[:140]
             if topic:
-                return (f"Picking up our thread on **{topic}** — I don't have grounded facts for that one. "
-                        "Try **“search memory for …”**, **“create a task to …”**, or rephrase with a name or date.")
+                return (
+                    f"Picking up our thread on **{topic}** — I don't have grounded facts for that one. "
+                    "Try **“search memory for …”**, **“create a task to …”**, or rephrase with a name or date."
+                )
         # default grounded answer
         if memories:
             top = memories[0]
-            parts.append(f"From your memory — **{top.get('title','')}**: {top.get('content','')}")
+            parts.append(
+                f"From your memory — **{top.get('title', '')}**: {top.get('content', '')}"
+            )
             if len(memories) > 1:
-                parts.append(f"\n\nI found {len(memories)} related memories; the most relevant is shown first.")
+                parts.append(
+                    f"\n\nI found {len(memories)} related memories; the most relevant is shown first."
+                )
             parts.append(self._mem_note(memories, skip_first=True))
             return "\n".join(parts)
-        lk = tool_results.get("s2", {}) if isinstance(tool_results.get("s2"), dict) else {}
+        lk = (
+            tool_results.get("s2", {})
+            if isinstance(tool_results.get("s2"), dict)
+            else {}
+        )
         found = [f"task: {t.get('title', '')}" for t in (lk.get("tasks") or [])[:3]]
-        found += [f"project: {p.get('name', '')}" for p in (lk.get("projects") or [])[:3]]
+        found += [
+            f"project: {p.get('name', '')}" for p in (lk.get("projects") or [])[:3]
+        ]
         if found:
-            return ("I found related records: **" + "**, **".join(found) + "**. "
-                    "Want details on one - or should I create a task from this?")
-        return ("I've noted that. To act on it, try: **“create a task to …”**, **“plan my day”**, "
-                "**“review my clients”**, **“log …”**, or **“remember that …”**.")
+            return (
+                "I found related records: **" + "**, **".join(found) + "**. "
+                "Want details on one - or should I create a task from this?"
+            )
+        return (
+            "I've noted that. To act on it, try: **“create a task to …”**, **“plan my day”**, "
+            "**“review my clients”**, **“log …”**, or **“remember that …”**."
+        )
 
     # ---- composers ----
     def _mem_note(self, memories: list[dict], skip_first: bool = False) -> str:
@@ -561,28 +1143,50 @@ class BuiltinEngine:
         if not ms:
             return ""
         n = min(2, len(ms))
-        return "\n\n*Grounded in " + str(len(ms)) + " memor" + ("y" if len(ms) == 1 else "ies") + ".*"
+        return (
+            "\n\n*Grounded in "
+            + str(len(ms))
+            + " memor"
+            + ("y" if len(ms) == 1 else "ies")
+            + ".*"
+        )
 
     def _plan_day(self, tr: dict) -> str:
         over = tr.get("overdue", []) or []
         over_ids = {t.get("id") for t in over}
-        tasks = list(over) + [t for t in (tr.get("open_tasks", []) or []) if t.get("id") not in over_ids]
+        tasks = list(over) + [
+            t for t in (tr.get("open_tasks", []) or []) if t.get("id") not in over_ids
+        ]
         blocks = tr.get("timeblocks", [])
-        lines = ["Here's your plan for today, prioritized by deadline and importance:\n"]
+        lines = [
+            "Here's your plan for today, prioritized by deadline and importance:\n"
+        ]
         if not tasks:
-            lines.append("• Your task list is clear — enjoy the open road, or tell me what matters most today.")
+            lines.append(
+                "• Your task list is clear — enjoy the open road, or tell me what matters most today."
+            )
         else:
             for i, t in enumerate(tasks[:6], 1):
                 due = f" (due {t['due_at'][:10]})" if t.get("due_at") else ""
-                lines.append(f"**{i}. {t['title']}** — {t.get('priority','medium')} priority{due}")
+                lines.append(
+                    f"**{i}. {t['title']}** — {t.get('priority', 'medium')} priority{due}"
+                )
         if blocks:
             lines.append("\n**Time blocks:**")
             for b in blocks[:6]:
-                lines.append(f"• {b['starts_at'][11:16]}–{b['ends_at'][11:16]} — {b['title']}")
+                lines.append(
+                    f"• {b['starts_at'][11:16]}–{b['ends_at'][11:16]} — {b['title']}"
+                )
         misses = tr.get("overdue", [])
         if misses:
-            lines.append(f"\n⚠️ **{len(misses)} overdue** — I put the riskiest one first.")
-        opps = (tr.get("opportunities", {}) or {}).get("opportunities", []) if isinstance(tr.get("opportunities"), dict) else (tr.get("opportunities") or [])
+            lines.append(
+                f"\n⚠️ **{len(misses)} overdue** — I put the riskiest one first."
+            )
+        opps = (
+            (tr.get("opportunities", {}) or {}).get("opportunities", [])
+            if isinstance(tr.get("opportunities"), dict)
+            else (tr.get("opportunities") or [])
+        )
         opps = [o for o in opps if isinstance(o, dict)][:2]
         if opps:
             lines.append("\n🔮 **Worth a look:**")
@@ -599,13 +1203,21 @@ class BuiltinEngine:
             return "You have no clients or projects yet. Say **“add client Acme”** or **“new project Website”** to begin."
         lines = ["**Client workload review**\n"]
         for p in projects:
-            bar = "🟢" if p.get("health") == "on_track" else ("🟡" if p.get("health") == "at_risk" else "🔴")
-            lines.append(f"{bar} **{p['name']}** — {p.get('progress',0)}% · {p.get('status','active')}")
+            bar = (
+                "🟢"
+                if p.get("health") == "on_track"
+                else ("🟡" if p.get("health") == "at_risk" else "🔴")
+            )
+            lines.append(
+                f"{bar} **{p['name']}** — {p.get('progress', 0)}% · {p.get('status', 'active')}"
+            )
         if overdue:
             lines.append(f"\n⚠️ **{len(overdue)} overdue task(s):**")
             for t in overdue[:5]:
                 lines.append(f"• {t['title']}")
-            lines.append("\nSay **“draft follow-ups”** and I'll prepare messages for approval.")
+            lines.append(
+                "\nSay **“draft follow-ups”** and I'll prepare messages for approval."
+            )
         else:
             lines.append("\nNothing overdue. Your client work is on track. ✅")
         return "\n".join(lines)
@@ -617,21 +1229,30 @@ class BuiltinEngine:
         lines = [f"**{len(tasks)} task(s):**\n"]
         for t in tasks[:12]:
             box = "✅" if t["status"] == "completed" else "⬜"
-            lines.append(f"{box} **{t['title']}** — {t['status']} · {t.get('priority','medium')}")
+            lines.append(
+                f"{box} **{t['title']}** — {t['status']} · {t.get('priority', 'medium')}"
+            )
         return "\n".join(lines)
 
     def _project_status(self, entities: dict) -> str:
         projects = entities.get("projects", [])
         if not projects:
             return "No projects yet. Say **“new project …”** to create one."
-        return "\n".join(f"**{p['name']}** — {p.get('progress',0)}% · {p.get('status')}" for p in projects[:10])
+        return "\n".join(
+            f"**{p['name']}** — {p.get('progress', 0)}% · {p.get('status')}"
+            for p in projects[:10]
+        )
 
     def _memory_answer(self, memories: list[dict], q: str) -> str:
         if not memories:
             return "I searched your memory and found nothing relevant yet. Tell me something with **“remember that …”**."
-        lines = [f"I found **{len(memories)}** relevant memor{'y' if len(memories)==1 else 'ies'}:\n"]
+        lines = [
+            f"I found **{len(memories)}** relevant memor{'y' if len(memories) == 1 else 'ies'}:\n"
+        ]
         for m in memories[:5]:
-            lines.append(f"• **{m.get('title','')}** — {m.get('content','')}  _(relevance {m.get('relevance',0)})_")
+            lines.append(
+                f"• **{m.get('title', '')}** — {m.get('content', '')}  _(relevance {m.get('relevance', 0)})_"
+            )
         return "\n".join(lines)
 
     def _resume_help(self, tr: dict, entities: dict) -> str:
@@ -640,16 +1261,22 @@ class BuiltinEngine:
         score = tr.get("ats_score")
         lines = ["**Resume analysis**\n"]
         if base:
-            lines.append(f"Active resume: **{base['name']} v{base['version']}** (ATS score {base.get('ats_score',0)}/100).")
+            lines.append(
+                f"Active resume: **{base['name']} v{base['version']}** (ATS score {base.get('ats_score', 0)}/100)."
+            )
         if score is not None:
             lines.append(f"Latest analysis: **ATS {score}/100**.")
-        lines += ["", "**Recommendations:**",
-                  "1. Quantify achievements — add numbers (%, KES, users, latency) to every bullet.",
-                  "2. Mirror the job description's top 8 keywords in a Skills section.",
-                  "3. Keep it to 2 pages; most recent role gets the most space.",
-                  "4. Start bullets with strong verbs: built, led, shipped, cut, grew.",
-                  "5. Add a 3-line summary targeting the exact role title.",
-                  "", "Open **Career & Work → Resume** to upload a new version or export."]
+        lines += [
+            "",
+            "**Recommendations:**",
+            "1. Quantify achievements — add numbers (%, KES, users, latency) to every bullet.",
+            "2. Mirror the job description's top 8 keywords in a Skills section.",
+            "3. Keep it to 2 pages; most recent role gets the most space.",
+            "4. Start bullets with strong verbs: built, led, shipped, cut, grew.",
+            "5. Add a 3-line summary targeting the exact role title.",
+            "",
+            "Open **Career & Work → Resume** to upload a new version or export.",
+        ]
         return "\n".join(lines)
 
     def _interview_prep(self, tr: dict, entities: dict) -> str:
@@ -658,27 +1285,37 @@ class BuiltinEngine:
         _role = s1.get("role", "your role")
         _lines = [f"**Interview prep - {_role}**", ""]
         _lines += [f"**Q{i}.** {q}" for i, q in enumerate(_qs[:6], 1)]
-        _lines += ["", "Open **Career & Work, Interviews tab** to log a scored practice session."]
+        _lines += [
+            "",
+            "Open **Career & Work, Interviews tab** to log a scored practice session.",
+        ]
         return "\n".join(_lines)
 
     def _interview_prep_legacy(self, tr: dict, entities: dict) -> str:
-        lines = ["**Interview prep** — here are 5 questions to practice:\n",
-                 "1. Walk me through your most impactful project in 2 minutes.",
-                 "2. Describe a conflict with a stakeholder and how you resolved it.",
-                 "3. How do you prioritize when everything is urgent?",
-                 "4. Tell me about a failure and what you changed afterwards.",
-                 "5. Why this company, and why this role, right now?",
-                 "", "Say **“mock interview”** and I'll quiz you one question at a time with scoring."]
+        lines = [
+            "**Interview prep** — here are 5 questions to practice:\n",
+            "1. Walk me through your most impactful project in 2 minutes.",
+            "2. Describe a conflict with a stakeholder and how you resolved it.",
+            "3. How do you prioritize when everything is urgent?",
+            "4. Tell me about a failure and what you changed afterwards.",
+            "5. Why this company, and why this role, right now?",
+            "",
+            "Say **“mock interview”** and I'll quiz you one question at a time with scoring.",
+        ]
         return "\n".join(lines)
 
     def _followup(self, tr: dict) -> str:
         drafts = tr.get("drafts", [])
         if not drafts:
             return "Nothing overdue — no follow-ups needed. Your clients are in good shape."
-        lines = ["I've drafted follow-ups. **Review and approve** each before anything is sent:\n"]
+        lines = [
+            "I've drafted follow-ups. **Review and approve** each before anything is sent:\n"
+        ]
         for d in drafts[:5]:
             lines.append(f"**To {d['to']}** — _{d['subject']}_\n> {d['body']}\n")
-        lines.append("Open the **approval card** above (or Activity → Approvals) to approve, edit, or reject.")
+        lines.append(
+            "Open the **approval card** above (or Activity → Approvals) to approve, edit, or reject."
+        )
         return "\n".join(lines)
 
     def _finance(self, tr: dict, entities: dict) -> str:
@@ -688,7 +1325,9 @@ class BuiltinEngine:
         lines = [f"**Spending:** {cur} {total:,.0f} across {len(ex)} expense(s)."]
         by: dict[str, float] = {}
         for e in ex:
-            by[e.get("category", "other")] = by.get(e.get("category", "other"), 0) + float(e.get("amount", 0))
+            by[e.get("category", "other")] = by.get(
+                e.get("category", "other"), 0
+            ) + float(e.get("amount", 0))
         for c, v in sorted(by.items(), key=lambda x: -x[1])[:6]:
             lines.append(f"• {c}: {cur} {v:,.0f}")
         return "\n".join(lines)
@@ -701,9 +1340,16 @@ class BuiltinEngine:
             return "📭 Inbox zero — nothing unread. Nicely done."
         lines = [f"📬 **{n} unread** — top of the pile:", ""]
         for m in top[:5]:
-            tag = {"action": "🔴", "waiting": "🟡", "fyi": "🔵"}.get(m.get("triage", ""), "⚪")
-            lines.append(f"{tag} **{(m.get('subject') or '')[:70]}** — {(m.get('sender') or '')[:40]}")
-        lines += ["", "Open **Inbox** to read, or say `triage my inbox` again after sync."]
+            tag = {"action": "🔴", "waiting": "🟡", "fyi": "🔵"}.get(
+                m.get("triage", ""), "⚪"
+            )
+            lines.append(
+                f"{tag} **{(m.get('subject') or '')[:70]}** — {(m.get('sender') or '')[:40]}"
+            )
+        lines += [
+            "",
+            "Open **Inbox** to read, or say `triage my inbox` again after sync.",
+        ]
         return "\n".join(lines)
 
     def _calendar_today(self, tr: dict) -> str:
@@ -721,7 +1367,10 @@ class BuiltinEngine:
     def _calendar_create(self, tr: dict) -> str:
         s1 = tr.get("s1", {}) if isinstance(tr.get("s1"), dict) else {}
         if not s1.get("created"):
-            return s1.get("error", "I couldn't create that event.") + " e.g. `schedule dentist friday 9am`."
+            return (
+                s1.get("error", "I couldn't create that event.")
+                + " e.g. `schedule dentist friday 9am`."
+            )
         t = (s1.get("starts_at") or "")[:16].replace("T", " ")
         return f"📅 Scheduled **{s1.get('title', 'event')}** ({t} UTC). Say `my schedule` anytime to see the day."
 
@@ -729,12 +1378,24 @@ class BuiltinEngine:
         svcs = tr.get("services", [])
         lines = ["**System status:**"]
         for s in svcs:
-            dot = "🟢" if s["status"] == "online" else ("🟡" if s["status"] == "degraded" else "🔴")
+            dot = (
+                "🟢"
+                if s["status"] == "online"
+                else ("🟡" if s["status"] == "degraded" else "🔴")
+            )
             lines.append(f"{dot} {s['name']}: {s['status']}")
         return "\n".join(lines)
 
     def _terminal(self, tr: dict) -> str:
         r = tr.get("s1", {}) if isinstance(tr.get("s1"), dict) else {}
+        if r.get("awaiting_approval"):
+            # Nothing failed — the R3 gate is holding the command on purpose.
+            cmd = (r.get("command_text") or "").strip()
+            return (
+                "⏸ That command needs your approval before I run it"
+                + (f":\n\n`{cmd[:200]}`" if cmd else "")
+                + "\n\nApprove or reject it in the approval card and I'll continue."
+            )
         if r.get("denied"):
             return f"🛑 I refused to run that — {r.get('error', 'safety policy')}."
         if r.get("dry_run"):
@@ -749,22 +1410,31 @@ class BuiltinEngine:
         machine = r.get("machine", "local")
         tag = "" if machine == "local" else f" on **{machine}**"
         what = f"script **{r['script']}**" if r.get("script") else "command"
-        return (f"**Ran {what}{tag}** in {r.get('duration_ms', 0)} ms · {head}"
-                f" · {r.get('cwd', '')}\n\n```\n{out[:2400]}\n```")
+        return (
+            f"**Ran {what}{tag}** in {r.get('duration_ms', 0)} ms · {head}"
+            f" · {r.get('cwd', '')}\n\n```\n{out[:2400]}\n```"
+        )
 
     def _ollama_models(self, tr: dict) -> str:
         r = tr.get("s1", {}) if isinstance(tr.get("s1"), dict) else {}
         if not r.get("reachable") and not r.get("models"):
-            return (f"I can't see Ollama at {r.get('base_url', 'localhost:11434')} — is it running? "
-                     f"({r.get('error', 'unreachable')})")
+            return (
+                f"I can't see Ollama at {r.get('base_url', 'localhost:11434')} — is it running? "
+                f"({r.get('error', 'unreachable')})"
+            )
         models = r.get("models", [])
         if not models:
             return f"Ollama is reachable at {r.get('base_url')} but has no models pulled yet. `ollama pull llama3.1` then ask me again."
-        lines = [f"**Model room** — {len(models)} local model(s) at {r.get('base_url', '')}:", ""]
+        lines = [
+            f"**Model room** — {len(models)} local model(s) at {r.get('base_url', '')}:",
+            "",
+        ]
         for m in models[:12]:
             caps = ", ".join(m.get("capabilities", []))
-            lines.append(f"• **{m['name']}** · {m.get('size', '?')} · {m.get('parameter_size', '')} "
-                         f"{m.get('quantization', '')} · {caps}")
+            lines.append(
+                f"• **{m['name']}** · {m.get('size', '?')} · {m.get('parameter_size', '')} "
+                f"{m.get('quantization', '')} · {caps}"
+            )
         if len(models) > 12:
             lines.append(f"… {len(models) - 12} more")
         if not r.get("reachable"):
@@ -775,22 +1445,34 @@ class BuiltinEngine:
         r = tr.get("s1", {}) if isinstance(tr.get("s1"), dict) else {}
         items = r.get("items", [])
         if not items:
-            return ("You're not following any feeds yet. Add one on the Feeds screen, or say "
-                    "“follow https://hnrss.org/frontpage”.")
+            return (
+                "You're not following any feeds yet. Add one on the Feeds screen, or say "
+                "“follow https://hnrss.org/frontpage”."
+            )
         lines = [f"**{len(items)} latest feed item(s):**", ""]
         for it in items[:8]:
             date = (it.get("published") or it.get("fetched_at") or "")[:10]
-            lines.append(f"• **{it.get('title', '')[:110]}** — {it.get('feed_title') or ''} {date}".rstrip())
+            lines.append(
+                f"• **{it.get('title', '')[:110]}** — {it.get('feed_title') or ''} {date}".rstrip()
+            )
         return "\n".join(lines)
 
     def _weather(self, tr: dict) -> str:
         w = tr.get("s1", {}) if isinstance(tr.get("s1"), dict) else {}
         if not w.get("ok"):
-            extra = " Enable it in Settings → Weather." if w.get("configured") is False else ""
+            extra = (
+                " Enable it in Settings → Weather."
+                if w.get("configured") is False
+                else ""
+            )
             return f"No weather yet — {w.get('reason', 'unavailable')}.{extra}"
-        lines = [f"**{w.get('place')}** · {w.get('temp_c')}°C (feels {w.get('feels_c')}°C), {w.get('condition')}, wind {w.get('wind_kmh')} km/h"]
+        lines = [
+            f"**{w.get('place')}** · {w.get('temp_c')}°C (feels {w.get('feels_c')}°C), {w.get('condition')}, wind {w.get('wind_kmh')} km/h"
+        ]
         for d in w.get("today", [])[:3]:
-            lines.append(f"• {d['date']}: {d.get('low_c')}–{d.get('high_c')}°C, {d.get('condition')}, rain {d.get('rain_pct')}%")
+            lines.append(
+                f"• {d['date']}: {d.get('low_c')}–{d.get('high_c')}°C, {d.get('condition')}, rain {d.get('rain_pct')}%"
+            )
         return "\n".join(lines)
 
     def _web_search(self, tr: dict, user_text: str) -> str:
@@ -799,52 +1481,83 @@ class BuiltinEngine:
             lines = ["**Web search results:**", ""]
             for r in results[:5]:
                 snip = (r.get("snippet") or "").strip()
-                lines.append(f"- **{(r.get('title') or '')[:100]}** — {r.get('link', '')}")
+                lines.append(
+                    f"- **{(r.get('title') or '')[:100]}** — {r.get('link', '')}"
+                )
                 if snip:
                     lines.append(f"  _{snip[:180]}_")
-            lines += ["", "Tap any link to open it. Want me to **read one for you**? Paste the URL."]
+            lines += [
+                "",
+                "Tap any link to open it. Want me to **read one for you**? Paste the URL.",
+            ]
             return "\n".join(lines)
         err = tr.get("search_error", "") or "no results"
-        return (f"I couldn't complete that web search right now ({err}). "
-                "Try pasting a direct URL instead — I can read pages for you.")
+        return (
+            f"I couldn't complete that web search right now ({err}). "
+            "Try pasting a direct URL instead — I can read pages for you."
+        )
 
     def _mission_status(self, tr: dict) -> str:
         missions = tr.get("missions", []) or []
         if not missions:
-            return ("No missions yet. Say “make a mission to …” or open **Automations → Missions** "
-                    "to plan one — then ask me again and I'll stream its progress here.")
+            return (
+                "No missions yet. Say “make a mission to …” or open **Automations → Missions** "
+                "to plan one — then ask me again and I'll stream its progress here."
+            )
         lines = ["**Your missions:**", ""]
-        icon = {"done": "✅", "failed": "❌", "running": "🔄", "awaiting": "⏸", "cancelled": "✖"}
+        icon = {
+            "done": "✅",
+            "failed": "❌",
+            "running": "🔄",
+            "awaiting": "⏸",
+            "cancelled": "✖",
+        }
         for m in missions[:8]:
             st = m.get("status", "draft")
             steps = m.get("steps") or []
             done_n = sum(1 for s in steps if s.get("status") == "done")
             prog = f"{done_n}/{len(steps)}" if steps else "—"
-            nxt = f" · next {m.get('next_run_at', '')[:16]}" if m.get("next_run_at") else ""
-            lines.append(f"{icon.get(st, '📋')} **{(m.get('goal') or '')[:80]}** — {st} ({prog} steps){nxt}")
+            nxt = (
+                f" · next {m.get('next_run_at', '')[:16]}"
+                if m.get("next_run_at")
+                else ""
+            )
+            lines.append(
+                f"{icon.get(st, '📋')} **{(m.get('goal') or '')[:80]}** — {st} ({prog} steps){nxt}"
+            )
             if st in ("running", "awaiting") and steps:
                 for s in steps[:6]:
-                    mark = {"done": "✓", "running": "▸", "awaiting": "…", "failed": "✗"}.get(s.get("status"), "·")
+                    mark = {
+                        "done": "✓",
+                        "running": "▸",
+                        "awaiting": "…",
+                        "failed": "✗",
+                    }.get(s.get("status"), "·")
                     note = f" — {s.get('note')[:60]}" if s.get("note") else ""
                     lines.append(f"    {mark} {s.get('label', '')}{note}")
-        lines += ["", "Open **Automations → Missions** to start, pause, or schedule them."]
+        lines += [
+            "",
+            "Open **Automations → Missions** to start, pause, or schedule them.",
+        ]
         return "\n".join(lines)
 
     def _help(self) -> str:
-        return ("**Things I can do:**\n"
-                "• **Plan** — “plan my day”, “what's overdue?”, “prioritize my tasks”\n"
-                "• **Clients** — “review my clients”, “draft follow-ups”, “new project X”\n"
-                "• **Career** — “optimize my resume”, “prep me for interviews”, “track application at Y”\n"
-                "• **Personal** — “log mood 8”, “add expense 1500 food”, “journal: …”, “slept 11pm to 6am”\n"
-                "• **Memory** — “remember that …”, “what do you remember about …”, “forget …”\n"
-                "• **Search & missions** — “search the web for …”, “how are my missions?”\n"
-                "• **System** — “system status”, “run backup”, “test telegram”\n"
-                "• **Terminal** — “run `git status` in my terminal”, “run my backup-prod script”,\n"
-                "  “which ollama models do I have?”, “switch to qwen2.5”\n"
-                "• **Watch** — drop files in the inbox folder and AURA indexes + reacts (Settings)\n"
-                "• **Feeds & weather** — “what's new on my feeds?”, “follow <rss url>”,”weather”\n"
-                "• **Mail & calendar** — “check email”, “triage inbox”, “my schedule”,\n"
-                "  “schedule lunch friday 1pm”, “brief me”, “evening briefing”")
+        return (
+            "**Things I can do:**\n"
+            "• **Plan** — “plan my day”, “what's overdue?”, “prioritize my tasks”\n"
+            "• **Clients** — “review my clients”, “draft follow-ups”, “new project X”\n"
+            "• **Career** — “optimize my resume”, “prep me for interviews”, “track application at Y”\n"
+            "• **Personal** — “log mood 8”, “add expense 1500 food”, “journal: …”, “slept 11pm to 6am”\n"
+            "• **Memory** — “remember that …”, “what do you remember about …”, “forget …”\n"
+            "• **Search & missions** — “search the web for …”, “how are my missions?”\n"
+            "• **System** — “system status”, “run backup”, “test telegram”\n"
+            "• **Terminal** — “run `git status` in my terminal”, “run my backup-prod script”,\n"
+            "  “which ollama models do I have?”, “switch to qwen2.5”\n"
+            "• **Watch** — drop files in the inbox folder and AURA indexes + reacts (Settings)\n"
+            "• **Feeds & weather** — “what's new on my feeds?”, “follow <rss url>”,”weather”\n"
+            "• **Mail & calendar** — “check email”, “triage inbox”, “my schedule”,\n"
+            "  “schedule lunch friday 1pm”, “brief me”, “evening briefing”"
+        )
 
 
 class ModelRouter:
@@ -868,60 +1581,113 @@ class ModelRouter:
             self._ollama_ok, self._ollama_note = self.ollama.healthy()
             self._checked_at = now
         cloud = self.cloud
-        return {"local_lfm": {"online": self._ollama_ok, "note": self._ollama_note,
-                              "model": self.ollama.model},
-                "cloud": {"configured": cloud.configured(), "model": cloud.model,
-                          "base": cloud.base, "provider": cloud.provider},
-                "builtin": {"online": True, "note": "grounded composer"},
-                "privacy": prefs.get("privacy")}
+        return {
+            "local_lfm": {
+                "online": self._ollama_ok,
+                "note": self._ollama_note,
+                "model": self.ollama.model,
+            },
+            "cloud": {
+                "configured": cloud.configured(),
+                "model": cloud.model,
+                "base": cloud.base,
+                "provider": cloud.provider,
+            },
+            "builtin": {"online": True, "note": "grounded composer"},
+            "privacy": prefs.get("privacy"),
+        }
 
     def chain(self) -> list[str]:
-        """Backend order honoring the privacy setting. Unknown modes fail closed to local-first."""
+        """Backend order honoring the privacy setting. Unknown modes fail closed to local-first.
+
+        Privacy contract: `local-first` must NEVER place `cloud` in the chain,
+        not even as a last resort and not even when a key is configured. Adding
+        cloud here silently ships user content off-machine. To use a cloud model
+        the user must switch privacy to `hybrid` or `cloud`.
+        """
         mode = (prefs.get("privacy") or "local-first").lower()
         if mode == "cloud":
             return ["cloud", "ollama", "builtin"]
-        if mode == "hybrid":
-            return ["ollama", "cloud", "builtin"]
-        return ["ollama", "builtin"]
+        if mode == "local-first":
+            # Never resolve the cloud client here: in local-first the cloud
+            # provider must not even be constructed, let alone called.
+            return ["ollama", "builtin"]
+        # hybrid
+        cloud_configured = get_cloud_client().configured()
+        cloud_model_set = bool(
+            prefs.get("openrouter_model")
+            or prefs.get("openai_model")
+            or prefs.get("custom_model")
+        )
+        if cloud_configured and cloud_model_set:
+            return ["cloud", "ollama", "builtin"]
+        return ["ollama", "cloud", "builtin"]
 
     def embed_fn(self):
         """Return best embedding function (Ollama -> hashed)."""
         probe = self.probe()
         if probe["local_lfm"]["online"]:
+
             def _emb(text: str):
-                model = prefs.get('ollama_embed_model') or config.OLLAMA_EMBED_MODEL
+                model = prefs.get("ollama_embed_model") or config.OLLAMA_EMBED_MODEL
                 v = self.ollama.embed(text, model=model)
                 if valid_embedding(v) and len(v) >= 32 and any(v):
                     return Embedding(v, f"ollama:{model}")
                 return Embedding(hashed_embed(text), "hashed:192")
-            _emb._emb_name = f"ollama:{prefs.get('ollama_embed_model') or config.OLLAMA_EMBED_MODEL}"
+
+            _emb._emb_name = (
+                f"ollama:{prefs.get('ollama_embed_model') or config.OLLAMA_EMBED_MODEL}"
+            )
             return _emb
         return hashed_embed
 
-    def generate(self, messages: list[dict], stream_cb=None, purpose: str = "chat") -> tuple[str, str]:
+    def generate(
+        self, messages: list[dict], stream_cb=None, purpose: str = "chat"
+    ) -> tuple[str, str]:
         """Returns (text, model_name) following the privacy-ordered chain."""
         probe = self.probe()
         last_error = None
         for backend in self.chain():
             if backend == "ollama" and probe["local_lfm"]["online"]:
                 try:
-                    text = self.ollama.chat(messages, stream_cb=stream_cb, purpose=purpose)
+                    text = self.ollama.chat(
+                        messages, stream_cb=stream_cb, purpose=purpose
+                    )
                     if text.strip():
-                        db.log_activity("run", "Local LFM generation", self.ollama.model, "general")
+                        db.log_activity(
+                            "run", "Local LFM generation", self.ollama.model, "general"
+                        )
                         return text, f"ollama/{self.ollama.model}"
                 except Exception as e:
                     last_error = e
-                    db.log_activity("run", "Local LFM failed, continuing chain", str(e)[:120], "general", "warn")
+                    db.log_activity(
+                        "run",
+                        "Local LFM failed, continuing chain",
+                        str(e)[:120],
+                        "general",
+                        "warn",
+                    )
             elif backend == "cloud" and probe["cloud"]["configured"]:
                 try:
-                    safe = [{**m, "content": scrub_secrets(m.get("content", ""))} for m in messages]
+                    safe = [
+                        {**m, "content": scrub_secrets(m.get("content", ""))}
+                        for m in messages
+                    ]
                     text = self.cloud.chat(safe, stream_cb=stream_cb, purpose=purpose)
                     if text.strip():
-                        db.log_activity("run", "Cloud LFM generation", self.cloud.model, "general")
+                        db.log_activity(
+                            "run", "Cloud LFM generation", self.cloud.model, "general"
+                        )
                         return text, f"cloud/{self.cloud.model}"
                 except Exception as e:
                     last_error = e
-                    db.log_activity("run", "Cloud failed, continuing chain", str(e)[:120], "general", "warn")
+                    db.log_activity(
+                        "run",
+                        "Cloud failed, continuing chain",
+                        str(e)[:120],
+                        "general",
+                        "warn",
+                    )
         # All backends failed - raise to let caller handle fallback with full context
         raise RuntimeError(f"All model backends failed: {last_error}")
 

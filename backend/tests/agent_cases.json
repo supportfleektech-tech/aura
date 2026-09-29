@@ -102,13 +102,13 @@
       "system.undo"
      ],
      "contains": [
-      "Nothing to undo"
+      "Undone"
      ],
      "db": [
       {
        "sql": "SELECT COUNT(*) n FROM tasks WHERE title LIKE '%temporary thing%'",
        "col": "n",
-       "want": 1
+       "want": 0
       }
      ]
     }

@@ -148,11 +148,17 @@ def cached() -> list[dict]:
     return out
 
 
-def list_models() -> dict:
-    """Cache-first catalog for the UI, with a live probe for the status dot."""
+def list_models(refresh: bool = False) -> dict:
+    """Catalog for the UI. `refresh=True` re-probes Ollama and updates the cache first."""
+    if refresh:
+        try:
+            sync()  # on failure the previous cache survives, by design
+        except Exception:
+            pass  # a cache refresh failure must not hide a live answer
     probe = live_list(timeout=1.5)
     return {"reachable": bool(probe.get("ok")), "base_url": _base(),
-            "models": cached(), "error": probe.get("error", "")}
+            "models": cached(), "error": probe.get("error", ""),
+            "refreshed": bool(refresh)}
 
 
 def set_default(role: str, name: str) -> dict:

@@ -94,7 +94,7 @@ def fire_file_automations(fp: Path, event: str) -> int:
         if kw and not (kw in blob or fnmatch.fnmatch(fp.name.lower(), kw)):
             continue
         from .hermes import hermes
-        res = hermes._fire_one(a)
+        res = hermes.fire_event(a, fire_id=f"file-{a['id']}-{fp.name}")
         fired += 1 if res.get("ok") else 0
     return fired
 

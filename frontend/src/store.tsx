@@ -1,6 +1,6 @@
 /* AURA OS global store — view routing, data, chat, orb state, voice, toasts. */
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { api, chatStream, ChatMsg, Dashboard, OrbState, PlanStep, uid } from "./api";
+import { api, chatStream, ChatMsg, Dashboard, OrbState, uid } from "./api";
 import { createApprovalAlerts, playAlertSound } from "./alerts";
 import { getServer, loadServerSettings, voicePreferenceKey } from "./prefs";
 
@@ -11,7 +11,7 @@ interface Toast { id: string; text: string; kind: "info" | "success" | "warn" | 
 interface Store {
   view: View; setView: (v: View) => void;
   me: { name: string; role: string; location: string; version?: string } | null;
-  dash: Dashboard | null; online: boolean; lfm: string;
+  dash: Dashboard | null; online: boolean; lfm: string; activeModel: { backend: string; provider: string; model: string; privacy_mode: string; local_online: boolean; cloud_configured: boolean } | null;
   refresh: () => Promise<void>;
   orb: OrbState; setOrb: (s: OrbState) => void;
   msgs: ChatMsg[]; sending: boolean; sessionId: string | null;
@@ -58,6 +58,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [online, setOnline] = useState(true);
   const [lfm, setLfm] = useState("checking…");
   const [orb, setOrbState] = useState<OrbState>("idle");
+  const [activeModel, setActiveModel] = useState<Store["activeModel"]>(null);
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [sending, setSending] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -97,6 +98,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setMe(m); setDash(d); setOnline(true);
       const l = h.services.find((s) => s.name === "Local LFM");
       setLfm(l?.status === "online" ? "Local LFM Online" : "Builtin Engine · LFM Standby");
+      if (h.active_model) setActiveModel(h.active_model);
       setPendingApprovals(ap.approvals.length);
       updateApprovalAlerts.current(ap.approvals.map((a) => a.id));
     } catch {
@@ -246,11 +248,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         onStep: (s) => setMsgs((ms) => ms.map((m) => m.id === aid
           ? { ...m, steps: (m.steps || []).map((x) => (x.id === s.id ? { ...x, status: s.status } : x)) } : m)),
         onToken: (t) => { acc += t; if (getServer("chat_streaming", true)) patch({ text: acc }); },
+        onThinking: (t) => setMsgs((ms) => ms.map((m) => m.id === aid ? { ...m, thinking: [...(m.thinking || []), t.text] } : m)),
         onApproval: (a) => { if (a) updateApprovalAlerts.current([a.id]); patch({ approval: a || undefined }); },
         onResult: (r) => {
           acc = r.text;
           if (r.approval) updateApprovalAlerts.current([r.approval.id]);
-          patch({ text: r.text, memories: r.memories_used || [], approval: r.approval || undefined, model: r.model });
+          patch({ text: r.text, memories: r.memories_used || [], approval: r.approval || undefined, model: r.model, thinking: undefined });
           if (getServer("voice_autoplay", false) && r.text.trim()) speakRef.current?.(r.text);
         },
         onMemory: (m) => { if (m.stored?.length) toast(`Saved to memory: ${m.stored[0].title.slice(0, 60)}`, "success"); },
@@ -353,7 +356,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       view, setView, me, dash, online, lfm, refresh, orb, setOrb, msgs, sending, sessionId,
       send, newChat, loadSession, palette, setPalette, toasts, toast, listening, toggleListen, transcript,
       speak, speaking, stopSpeak, stopGenerating, micLevel, pendingApprovals, call, setCall,
-      composerFocus, requestComposerFocus,
+      composerFocus, requestComposerFocus, activeModel,
     }}>
       {children}
     </Ctx.Provider>
