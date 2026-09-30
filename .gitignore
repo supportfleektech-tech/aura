@@ -26,3 +26,6 @@ htmlcov/
 .ruff_cache/
 playwright-report/
 test-results/
+
+# isolated implementation worktrees
+/.worktrees/
