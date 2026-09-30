@@ -29,3 +29,9 @@ test-results/
 
 # isolated implementation worktrees
 /.worktrees/
+
+# In a worktree, venv/ and node_modules are symlinks to the shared toolchain.
+# The directory patterns above do not match a symlink, so `git add -A` would
+# try to commit 1.1GB of link targets. Match the links explicitly.
+/venv
+/frontend/node_modules
