@@ -5,11 +5,22 @@ import tempfile
 _tmp = tempfile.mkdtemp(prefix="aura-workers-")
 os.environ["AURA_DB_PATH"] = os.path.join(_tmp, "test.db")
 
+# Keep the 30s scheduler daemon thread out of the test process. Every
+# TestClient(app).__enter__ runs app.main._startup, which starts another one,
+# and they all tick/consolidate/drain the single database every test module
+# shares — so the thread settles rows other modules are about to assert on.
+# Set here at import time rather than on the command line because `unittest
+# discover` imports every test module while building the suite and only then
+# runs anything: by the first TestClient context manager this is already in
+# place, whether the run is `discover -s tests` or this module alone.
+os.environ["AURA_DISABLE_SCHEDULER"] = "1"
+
 import inspect  # noqa: E402
 import calendar  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 import unittest  # noqa: E402
+from unittest import mock  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -19,6 +30,21 @@ from app.main import app  # noqa: E402
 
 def _clear_jobs():
     db.run("DELETE FROM worker_jobs")
+
+
+def _quiesce_missions():
+    """Park every mission other test modules left behind.
+
+    All modules share one database, so by the time this file runs, missions
+    started by test_aura / test_kanban are still `running` and completed ones
+    may carry a due `next_run_at`. `tick_missions` and `tick_schedules` both
+    select `ORDER BY id LIMIT 5`, so those rows get ticked alongside — or
+    instead of — the fixture this class just created. Only the assertions here
+    depend on this, and no module runs after this one.
+    """
+    db.run("UPDATE missions SET next_run_at='' WHERE user_id=1")
+    db.run("UPDATE missions SET status='done' WHERE user_id=1 "
+           "AND status NOT IN ('done','failed','cancelled')")
 
 
 class WorkersTest(unittest.TestCase):
@@ -203,6 +229,117 @@ class WorkersTest(unittest.TestCase):
         self.assertIn("ran", r.json())
 
 
+class PoolSizeTest(unittest.TestCase):
+    """`pool_size` is the ThreadPoolExecutor's max_workers, so its clamp matters.
+
+    prefs validates `worker_pool_size` to 1..8 on write, so the clamp only ever
+    sees a value the validator would have rejected — a corrupt settings row, or
+    a future SCHEMA range widened without revisiting this line. That is exactly
+    when it must not hand back 0 (max_workers=0 raises ValueError, killing every
+    drain) or 99 (99 threads contending on one SQLite lock buys no throughput).
+    `prefs.get` is stubbed rather than set through set_many for that reason.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def test_pool_size_is_clamped_to_the_valid_range(self):
+        self.assertEqual(workers.pool_size(), 3, "unset pref -> SCHEMA default")
+        # `0 or 3` -> 3: a zero is indistinguishable from unset here, and the
+        # validator rejects 0 anyway, so it falls back rather than clamping.
+        for raw, want in ((0, 3), (None, 3), (-4, 1), (20, 8), (1, 1), (8, 8)):
+            with mock.patch.object(prefs, "get", return_value=raw):
+                self.assertEqual(workers.pool_size(), want, f"raw={raw!r}")
+
+
+class StatsFieldsTest(unittest.TestCase):
+    """The computed fields of stats(), asserted against a built fixture.
+
+    `stats_shape` above only proves the keys exist, so hardcoding any of these
+    three expressions to a constant keeps every test in this file green. They are
+    the numbers a user reads on the workers panel, so each is pinned to a value
+    worked out by hand from a known set of rows.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def setUp(self):
+        _clear_jobs()
+
+    def test_throughput_counts_only_recently_settled_jobs(self):
+        self.assertEqual(workers.stats()["throughput_per_min"], 0)
+        jid = workers.enqueue("custom", {})
+        # Queued is not throughput: a job nobody has run has settled nothing.
+        self.assertEqual(workers.stats()["throughput_per_min"], 0)
+        workers.complete(workers.claim(1)[0]["id"], {})
+        self.assertEqual(workers.stats()["throughput_per_min"], 1)
+        db.run("UPDATE worker_jobs SET updated_at=? WHERE id=?",
+               (workers._iso(time.time() - 3600), jid))
+        self.assertEqual(workers.stats()["throughput_per_min"], 0,
+                         "a row settled an hour ago is not this minute's throughput")
+
+    def test_error_rate_is_dead_over_settled(self):
+        self.assertEqual(workers.stats()["error_rate"], 0.0,
+                         "nothing settled yet -> 0.0, not a ZeroDivisionError")
+        for _ in range(3):
+            workers.complete(workers.enqueue("custom", {}), {})
+        dead = workers.enqueue("custom", {}, max_retries=0)
+        # claim() first: fail() reads `attempts`, which counts executions, so
+        # failing an unclaimed job sees 0 attempts and retries instead.
+        self.assertEqual([j["id"] for j in workers.claim(1)], [dead])
+        self.assertEqual(workers.fail(dead, "boom"), "dead")
+        s = workers.stats()
+        self.assertEqual((s["done"], s["dead"]), (3, 1), s)
+        self.assertEqual(s["error_rate"], 0.25, s)
+        # Queued work is neither a success nor a failure, so it must not move it.
+        workers.enqueue("custom", {})
+        self.assertEqual(workers.stats()["error_rate"], 0.25, workers.stats())
+
+
+class RunReturningTest(unittest.TestCase):
+    """Direct coverage for `db.run_returning`, the primitive `claim` is built on.
+
+    db.py's other helpers are exercised from test_aura.py, but this one is
+    load-bearing for the queue — `claim` is a single UPDATE..RETURNING precisely
+    because the SELECT/UPDATE/re-SELECT form double-claims — and until now
+    nothing tested it except claim itself.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def setUp(self):
+        _clear_jobs()
+
+    def test_returns_the_updated_rows(self):
+        jid = workers.enqueue("custom", {"n": 1})
+        rows = db.run_returning(
+            "UPDATE worker_jobs SET status='done' WHERE id=? RETURNING id, status", (jid,))
+        self.assertEqual(rows, [{"id": jid, "status": "done"}], rows)
+        self.assertEqual(
+            db.qone("SELECT status FROM worker_jobs WHERE id=?", (jid,))["status"], "done")
+
+    def test_returns_empty_when_nothing_matched(self):
+        self.assertEqual(db.run_returning(
+            "UPDATE worker_jobs SET status='done' WHERE id=-1 RETURNING id"), [])
+
+    def test_honours_dry_run(self):
+        jid = workers.enqueue("custom", {})
+        with db.preview():
+            out = db.run_returning(
+                "UPDATE worker_jobs SET status='dead' WHERE id=? RETURNING status", (jid,))
+        # The statement still reports the rows it would have written...
+        self.assertEqual(out, [{"status": "dead"}], out)
+        # ...but DRY_RUN suppressed the commit and preview rolled it back, which
+        # is the whole point: without the `if not DRY_RUN` guard this row sticks.
+        self.assertEqual(
+            db.qone("SELECT status FROM worker_jobs WHERE id=?", (jid,))["status"], "queued")
+
+
 class MissionTickTest(unittest.TestCase):
     """Regression: the scheduler must drive missions, not just automations."""
 
@@ -218,6 +355,7 @@ class MissionTickTest(unittest.TestCase):
 
     def setUp(self):
         _clear_jobs()
+        _quiesce_missions()
 
     def test_scheduler_loop_source_drives_missions(self):
         """The 30s loop body must reach the mission ticks.
@@ -241,7 +379,13 @@ class MissionTickTest(unittest.TestCase):
         self.assertIn("tick_schedules()", body, body)
 
     def test_scheduler_pass_advances_a_running_mission(self):
-        """The behaviour itself: one pass must finish a one-step mission."""
+        """The behaviour itself: one pass must finish a one-step mission.
+
+        Asserts this mission is *among* the fired ones rather than the only one:
+        `tick_missions` legitimately advances every running mission, and which
+        other rows are running depends on module order. `setUp` parks them, so
+        membership is what this test actually means.
+        """
         mid = self.c.post("/api/missions", json={"goal": "T-Tick advance probe"}).json()["id"]
         self.c.patch(f"/api/missions/{mid}", json={"steps": [
             {"kind": "tool", "label": "Status", "tool": "system.status", "args": {}}]})
@@ -251,7 +395,7 @@ class MissionTickTest(unittest.TestCase):
         self.assertEqual(before["steps"][0]["status"], "pending")
         out = workers.scheduler_pass()
         self.assertIn("missions", out, out)
-        self.assertEqual([f["id"] for f in out["missions"]], [mid], out["missions"])
+        self.assertIn(mid, [f["id"] for f in out["missions"]], out["missions"])
         after = self.c.get(f"/api/missions/{mid}").json()
         self.assertEqual(after["status"], "done", after)
         self.assertEqual(after["steps"][0]["status"], "done")
@@ -269,10 +413,10 @@ class MissionTickTest(unittest.TestCase):
         db.run("UPDATE missions SET status='done', step_idx=1, "
                "next_run_at='2000-01-01T00:00:00+00:00' WHERE id=?", (mid,))
         out = workers.scheduler_pass()
-        self.assertEqual([s["id"] for s in out["schedules"]], [mid], out["schedules"])
+        self.assertIn(mid, [s["id"] for s in out["schedules"]], out["schedules"])
         # tick_schedules relaunches before tick_missions runs, so one pass both
         # relaunches it and drives the new run — assert both happened.
-        self.assertEqual([f["id"] for f in out["missions"]], [mid], out["missions"])
+        self.assertIn(mid, [f["id"] for f in out["missions"]], out["missions"])
         m = self.c.get(f"/api/missions/{mid}").json()
         self.assertEqual(m["status"], "done", m)
         self.assertEqual(m["steps"][0]["status"], "done")

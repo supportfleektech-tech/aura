@@ -63,7 +63,17 @@ for r in ROUTERS:
 def _startup():
     db.init_db()
     seed()
-    start_scheduler_loop()
+    # The loop is a 30s daemon thread that ticks automations, missions and
+    # schedules, runs a real consolidation pass and drains the queue against
+    # the live DB. Under test that is fatal to reproducibility: every
+    # TestClient(app) __enter__ runs this hook and starts *another* thread, and
+    # all test modules share one database, so the thread keeps settling rows
+    # other modules still own for the whole run (measured: 3 of 13 full-suite
+    # runs failing where the baseline was 6 of 6 green). AURA_DISABLE_SCHEDULER=1
+    # keeps it off; tests set it (see tests/test_workers.py) and nothing that
+    # serves real traffic does.
+    if os.environ.get("AURA_DISABLE_SCHEDULER") != "1":
+        start_scheduler_loop()
     print(
         f"AURA ready · privacy={prefs.get('privacy')} · cloud={model_router.cloud.provider}:{'on' if model_router.cloud.configured() else 'off'} · "
         f"cors={'open' if config.CORS_ORIGINS == ['*'] else config.CORS_ORIGINS} · "
