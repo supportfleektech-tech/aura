@@ -79,6 +79,9 @@ SCHEMA: dict[str, tuple[Any, str, Any]] = {
     "followup_ms": (6000, "int", (2000, 30000)),
     "barge_in": (True, "bool", None),
     "mission_step_checkins": (False, "bool", None),
+    # worker pool (spec §5, FR-WRK-001/003)
+    "worker_pool_size": (3, "int", (1, 8)),
+    "worker_max_retries": (3, "int", (0, 5)),
     # chat
     "chat_streaming": (True, "bool", None),
     "enter_to_send": (True, "bool", None),

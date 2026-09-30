@@ -124,6 +124,22 @@ def run(sql: str, params: tuple = ()) -> int:
         return cur.lastrowid or 0
 
 
+def run_returning(sql: str, params: tuple = ()) -> list[dict]:
+    """Execute a write that hands back rows (UPDATE .. RETURNING); returns them.
+
+    One statement, so it is atomic against concurrent callers sharing the pooled
+    connection. The worker queue's claim relies on that: a SELECT/UPDATE/re-SELECT
+    claim double-claims as soon as the window between the first two widens, which
+    would run one job — one mission step — twice.
+    """
+    with _lock:
+        cur = conn().execute(sql, params)
+        rows = [dict(r) for r in cur.fetchall()]
+        if not DRY_RUN:
+            conn().commit()
+        return rows
+
+
 def run_many(sql: str, seq: list[tuple]) -> None:
     with _lock:
         conn().executemany(sql, seq)

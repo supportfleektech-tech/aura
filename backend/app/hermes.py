@@ -864,12 +864,24 @@ def parse_sleep_text(text: str) -> dict:
 
 
 def start_scheduler_loop() -> None:
-    """Start the 30-second scheduler loop for automations and briefings."""
+    """Start the 30-second scheduler loop for automations, missions and jobs.
+
+    The loop body is `workers.scheduler_pass`, not inline work: missions used to
+    be ticked only from tests, so a mission started from the UI sat at `running`
+    forever. Keeping the body in a named function also makes it callable from a
+    test, which the sleeping thread is not.
+    """
+    from . import workers as _w
+    try:
+        _w.requeue_stale()
+    except Exception:
+        traceback.print_exc()
+
     def _loop():
         interval_s = 30
         while True:
             try:
-                hermes.tick_automations()
+                _w.scheduler_pass()
             except Exception:
                 traceback.print_exc()
             try:

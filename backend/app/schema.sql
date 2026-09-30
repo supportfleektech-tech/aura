@@ -646,3 +646,22 @@ CREATE TABLE IF NOT EXISTS watched_files (
   first_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   last_event TEXT NOT NULL DEFAULT ''
 );
+
+-- v1.16.0 — persistent worker queue (see app/workers.py)
+CREATE TABLE IF NOT EXISTS worker_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 1,
+  kind TEXT NOT NULL,                    -- mission_tick | schedule_tick | consolidation | custom
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued', -- queued | running | done | dead
+  priority INTEGER NOT NULL DEFAULT 5,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_retries INTEGER NOT NULL DEFAULT 3,
+  last_error TEXT NOT NULL DEFAULT '',
+  result_json TEXT NOT NULL DEFAULT '',
+  available_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+-- The claim path: filter on status, order by priority, range-scan available_at.
+CREATE INDEX IF NOT EXISTS idx_worker_jobs_claim ON worker_jobs(status, priority, available_at);

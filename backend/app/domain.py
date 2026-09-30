@@ -21,7 +21,7 @@ from .routes import (  # noqa: F401
     tasks_r, clients_r, projects_r, career_r, personal_r, memory_r, auto_r,
     activity_r, notes_r, approvals_r, gateway_r, push_r,
     brief_r, mail_r, cal_r, sync_r, pro_r, undo_r, cost_r, analytics_r,
-    missions_r, home_r, consol_r, board_r,
+    missions_r, home_r, consol_r, board_r, worker_r,
 )
 
 # Re-export task helpers used by hermes
