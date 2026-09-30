@@ -1155,7 +1155,6 @@ def _harvest(
     tool_results: dict,
     memories: list,
     entities: dict,
-    domain: str = "general",
 ) -> list[tuple[str, dict]]:
     """Fold a step's output into the turn context. Returns extra SSE events."""
     events: list[tuple[str, dict]] = []
@@ -1230,7 +1229,7 @@ def _harvest(
     try:
         from . import facts as _facts
 
-        _stored = _facts.harvest(tool, data, domain)
+        _stored = _facts.harvest(tool, data)
         if _stored:
             events.append(
                 (
@@ -1343,7 +1342,7 @@ def run_turn(
                 yield _sse("tool", {"id": step["id"], "tool": tool, "ok": not err})
                 yield _sse("thinking", {"text": f"Completed {step['label']}"})
                 for ev_name, payload in _harvest(
-                    tool, data, tool_results, memories, entities, domain
+                    tool, data, tool_results, memories, entities
                 ):
                     yield _sse(ev_name, payload)
                 step["status"] = "error" if err else "done"
@@ -1404,7 +1403,7 @@ def run_turn(
             tool_results[step["id"]] = data
             yield _sse("tool", {"id": step["id"], "tool": tool, "ok": True})
             for ev_name, payload in _harvest(
-                tool, data, tool_results, memories, entities, domain
+                tool, data, tool_results, memories, entities
             ):
                 yield _sse(ev_name, payload)
             step["status"] = "done"
