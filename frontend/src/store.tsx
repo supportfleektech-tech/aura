@@ -4,7 +4,7 @@ import { api, chatStream, ChatMsg, Dashboard, OrbState, uid } from "./api";
 import { createApprovalAlerts, playAlertSound } from "./alerts";
 import { getServer, loadServerSettings, voicePreferenceKey } from "./prefs";
 
-export type View = "home" | "career" | "clients" | "personal" | "inbox" | "calendar" | "memory" | "sessions" | "voice" | "gateway" | "automations" | "activity" | "analytics" | "smarthome" | "files" | "models" | "terminal" | "feeds" | "settings";
+export type View = "home" | "career" | "clients" | "personal" | "inbox" | "calendar" | "memory" | "sessions" | "voice" | "gateway" | "automations" | "board" | "activity" | "analytics" | "smarthome" | "files" | "models" | "terminal" | "feeds" | "settings";
 
 interface Toast { id: string; text: string; kind: "info" | "success" | "warn" | "error" }
 

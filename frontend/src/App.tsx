@@ -6,6 +6,7 @@ import { CommandPalette, ErrorBoundary, Sidebar, Toasts, TopBar } from "./ui";
 import { CareerView, ClientsView, PersonalView } from "./views1";
 const ActivityView = lazy(() => import("./views2").then((m) => ({ default: m.ActivityView })));
 const AutomationsView = lazy(() => import("./views2").then((m) => ({ default: m.AutomationsView })));
+const KanbanView = lazy(() => import("./views2/kanban").then((m) => ({ default: m.KanbanView })));
 const FilesView = lazy(() => import("./views2").then((m) => ({ default: m.FilesView })));
 const GatewayView = lazy(() => import("./views2").then((m) => ({ default: m.GatewayView })));
 const MemoryView = lazy(() => import("./views2").then((m) => ({ default: m.MemoryView })));
@@ -46,6 +47,7 @@ function Shell() {
             {view === "voice" && <VoiceView />}
             {view === "gateway" && <GatewayView />}
             {view === "automations" && <AutomationsView />}
+            {view === "board" && <KanbanView />}
             {view === "activity" && <ActivityView />}
             {view === "analytics" && <AnalyticsView />}
             {view === "smarthome" && <SmartHomeView />}

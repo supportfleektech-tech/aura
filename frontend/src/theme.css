@@ -520,3 +520,13 @@ input[type="range"].slider { accent-color: var(--violet); width: 150px; padding:
 .emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; max-height: 200px; overflow-y: auto; }
 .emoji-btn { background: none; border: none; font-size: 18px; cursor: pointer; padding: 4px; border-radius: 6px; transition: transform 0.1s, background 0.1s; display: flex; align-items: center; justify-content: center; }
 .emoji-btn:hover { background: rgba(56, 189, 248, 0.15); transform: scale(1.2); }
+
+/* ---------------- missions board ---------------- */
+.board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.boardcol { background: var(--surface2); border: 1px solid var(--border); border-radius: 14px; padding: 10px; min-height: 160px; display: flex; flex-direction: column; gap: 8px; }
+.boardcol.over { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan) inset; }
+.boardcol header { display: flex; justify-content: space-between; align-items: center; }
+.boardcard { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; cursor: grab; }
+.boardcard:active { cursor: grabbing; }
+@media (max-width: 900px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .board { grid-template-columns: 1fr; } }

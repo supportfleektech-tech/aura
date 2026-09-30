@@ -155,6 +155,7 @@ const NAV: { v: View; icon: string; key: TKey; section?: TKey }[] = [
   { v: "voice", icon: "mic", key: "nav.voice" },
   { v: "feeds", icon: "rss", key: "nav.feeds" },
   { v: "gateway", icon: "grid", key: "nav.gateway" },
+  { v: "board", icon: "rocket", key: "nav.board" },
   { v: "automations", icon: "zap", key: "nav.automations", section: "nav.system" },
   { v: "activity", icon: "clock", key: "nav.activity" },
   { v: "analytics", icon: "chart", key: "nav.analytics" },

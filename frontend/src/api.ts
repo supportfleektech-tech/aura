@@ -242,6 +242,11 @@ export const api = {
     scheduleMission: (id: number, every: string) => post<Mission>(`/missions/${id}/schedule`, { every }),
     missionRuns: (id: number) => get<{ runs: MissionRun[] }>(`/missions/${id}/runs`),
   },
+  board: {
+    get: () => get<{ columns: BoardColumn[]; counts: Record<string, number> }>("/board"),
+    move: (mission_id: number, column: string) =>
+      post<{ ok: boolean; mission: BoardMission }>("/board/move", { mission_id, column }),
+  },
   home: {
     status: () => get<HaStatus>(`/home/status`),
     entities: () => get<{ entities: HaEntity[]; mode: string; error?: string }>(`/home/entities`),
@@ -490,6 +495,8 @@ export interface VoiceCall {
   id: number; started_at: string; ended_at: string; mode: string; seconds: number;
   turns: number; summary: string; model: string; source: string; transcript?: string;
 }
+export type BoardMission = { id: number; goal: string; status: string; steps_total: number; steps_done: number; next_run_at: string; created_at: string; updated_at: string };
+export type BoardColumn = { key: "backlog" | "running" | "awaiting" | "done"; label: string; missions: BoardMission[] };
 
 /* tiny markdown: bold, italic, code, bullets, numbered, quotes, headings */
 export function md(src: string): string {
