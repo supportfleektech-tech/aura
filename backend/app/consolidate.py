@@ -7,11 +7,15 @@ AURA has no login, so there is no way to prove a hard delete was intended.
 Importance re-scoring uses only signals that already exist as columns: a
 re-confirmed memory (`last_confirmed`) and a user-corrected memory
 (`source LIKE 'user-corrected:%'`). There is deliberately no access counter;
-adding one would be a schema change to buy a heuristic.
+adding one would be a schema change to buy a heuristic. Both signals are gated
+on a `consolidate_last_run` watermark, because both columns are written by
+ordinary use (the dedupe pass, `memory.store`, `memory.update`) — scored on
+bare presence they would re-apply forever and pin importance at 1.0.
 """
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 
 from . import db, prefs
 from .memory import _tokens
@@ -53,9 +57,49 @@ def find_duplicate_groups(threshold: float = DUP_THRESHOLD, limit: int = 500) ->
     return groups
 
 
+def _epoch(stamp: str | None) -> float:
+    """Epoch seconds for a stamp as SQLite writes them (`%Y-%m-%dT%H:%M:%S.%fZ`).
+
+    0.0 for NULL or unparseable: an unreadable stamp must not read as "just
+    confirmed", which is the trap the pre-watermark pass fell into.
+    """
+    if not stamp:
+        return 0.0
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _watermark() -> float:
+    """`consolidate_last_run` in epoch seconds.
+
+    0 on a fresh install, which reads as 1970: the first pass counts every real
+    signal instead of silently no-opping on an unwritten watermark.
+    """
+    try:
+        return float(prefs.get("consolidate_last_run") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def run_pass(limit: int = 500) -> dict:
-    """One consolidation pass. Idempotent: every statement is scoped by id."""
+    """One consolidation pass.
+
+    Importance re-scoring is idempotent: it only counts a signal stamped after
+    the previous pass, so a second pass with nothing re-confirmed in between
+    leaves every importance untouched. The dedupe and archive passes stay
+    stateful by design — merging and retiring rows is the point — but neither
+    can resurrect a signal the watermark already consumed.
+
+    The pass records `consolidate_last_run` itself, at the end, so the watermark
+    advances for every caller. Writing it at the end (not the start) is what
+    makes that true: a signal stamped during this pass is newer than the
+    watermark this pass reads, so it is counted exactly once, here.
+    """
     t0 = time.time()
+    watermark = _watermark()
     merged = archived = rescored = 0
 
     for group in find_duplicate_groups(limit=limit):
@@ -75,10 +119,15 @@ def run_pass(limit: int = 500) -> dict:
                    (winner["id"], l["id"]))
             merged += 1
 
-    for r in db.q("SELECT id, importance, last_confirmed, source FROM memories "
+    for r in db.q("SELECT id, importance, last_confirmed, updated_at, source FROM memories "
                   "WHERE user_id=1 AND deleted_at IS NULL"):
-        bump = ((0.03 if r.get("last_confirmed") else 0.0)
-                + (0.02 if (r.get("source") or "").startswith("user-corrected:") else 0.0))
+        # `source` is written together with `updated_at` by memory.update, so
+        # updated_at is the correction's timestamp. Note this pass never
+        # touches updated_at itself — it would refresh the signal it just scored.
+        confirmed = _epoch(r.get("last_confirmed")) > watermark
+        corrected = ((r.get("source") or "").startswith("user-corrected:")
+                     and _epoch(r.get("updated_at")) > watermark)
+        bump = (0.03 if confirmed else 0.0) + (0.02 if corrected else 0.0)
         if bump <= 0:
             continue
         db.run("UPDATE memories SET importance=? WHERE id=?",
@@ -96,6 +145,8 @@ def run_pass(limit: int = 500) -> dict:
         db.run("UPDATE memories SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                "WHERE id=?", (v["id"],))
         archived += 1
+
+    prefs.set_many({"consolidate_last_run": int(time.time())})
 
     scanned = (db.qone("SELECT COUNT(*) c FROM memories WHERE user_id=1 "
                        "AND deleted_at IS NULL") or {}).get("c", 0)
