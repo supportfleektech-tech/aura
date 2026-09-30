@@ -32,7 +32,7 @@ export function KanbanView() {
   // `total` is the real mission count from the server; the board only loads the
   // newest `limit` of them, so `shown` alone would report a truncated number as
   // if it were the whole truth.
-  const total = (data as { total?: number } | undefined)?.total ?? shown;
+  const total = data?.total ?? shown;
 
   return (
     <div className="view">
@@ -75,7 +75,7 @@ export function KanbanView() {
                 key={m.id}
                 className="boardcard"
                 draggable
-                onDragStart={(e) => { setDragId(m.id); e.dataTransfer.setData("text/plain", String(m.id)); }}
+                onDragStart={() => setDragId(m.id)}
                 onDragEnd={() => setDragId(null)}
               >
                 <strong title={m.goal}>{m.goal}</strong>

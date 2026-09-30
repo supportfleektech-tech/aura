@@ -243,7 +243,7 @@ export const api = {
     missionRuns: (id: number) => get<{ runs: MissionRun[] }>(`/missions/${id}/runs`),
   },
   board: {
-    get: () => get<{ columns: BoardColumn[]; counts: Record<string, number> }>("/board"),
+    get: () => get<{ columns: BoardColumn[]; counts: Record<string, number>; total: number; limit: number }>("/board"),
     move: (mission_id: number, column: string) =>
       post<{ ok: boolean; mission: BoardMission }>("/board/move", { mission_id, column }),
   },
