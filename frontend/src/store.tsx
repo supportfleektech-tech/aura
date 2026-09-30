@@ -257,6 +257,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           if (getServer("voice_autoplay", false) && r.text.trim()) speakRef.current?.(r.text);
         },
         onMemory: (m) => { if (m.stored?.length) toast(`Saved to memory: ${m.stored[0].title.slice(0, 60)}`, "success"); },
+        onFacts: (f) => { if (f.stored?.length) toast(`Noted: ${f.stored[0].title.slice(0, 60)}`, "info"); },
         onVision: (v) => setMsgs((ms) => ms.map((m) => m.id === aid
           ? { ...m, vision: [...(m.vision || []).filter((x) => x.file !== v.file), v] } : m)),
         onMission: (mv) => setMsgs((ms) => ms.map((m) => m.id === aid

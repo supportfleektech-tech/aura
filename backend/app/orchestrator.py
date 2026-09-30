@@ -1150,7 +1150,12 @@ def _run_tool(tool: str, args: dict, ctx: dict, run_id: int) -> Any:
 
 
 def _harvest(
-    tool: str, data: Any, tool_results: dict, memories: list, entities: dict
+    tool: str,
+    data: Any,
+    tool_results: dict,
+    memories: list,
+    entities: dict,
+    domain: str = "general",
 ) -> list[tuple[str, dict]]:
     """Fold a step's output into the turn context. Returns extra SSE events."""
     events: list[tuple[str, dict]] = []
@@ -1222,6 +1227,24 @@ def _harvest(
             for m in data["data"]
             if isinstance(m, dict) and m.get("relevance", 1) >= 0.25
         )
+    try:
+        from . import facts as _facts
+
+        _stored = _facts.harvest(tool, data, domain)
+        if _stored:
+            events.append(
+                (
+                    "facts",
+                    {
+                        "stored": [
+                            {"id": s.get("id"), "title": s.get("title")}
+                            for s in _stored
+                        ]
+                    },
+                )
+            )
+    except Exception:
+        pass
     return events
 
 
@@ -1320,7 +1343,7 @@ def run_turn(
                 yield _sse("tool", {"id": step["id"], "tool": tool, "ok": not err})
                 yield _sse("thinking", {"text": f"Completed {step['label']}"})
                 for ev_name, payload in _harvest(
-                    tool, data, tool_results, memories, entities
+                    tool, data, tool_results, memories, entities, domain
                 ):
                     yield _sse(ev_name, payload)
                 step["status"] = "error" if err else "done"
@@ -1381,7 +1404,7 @@ def run_turn(
             tool_results[step["id"]] = data
             yield _sse("tool", {"id": step["id"], "tool": tool, "ok": True})
             for ev_name, payload in _harvest(
-                tool, data, tool_results, memories, entities
+                tool, data, tool_results, memories, entities, domain
             ):
                 yield _sse(ev_name, payload)
             step["status"] = "done"

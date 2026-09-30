@@ -99,6 +99,7 @@ export interface ChatEvents {
   onApproval?: (a: ChatMsg["approval"]) => void;
   onResult?: (r: { text: string; model: string; engine?: string; redacted_memories?: number; memories_used: ChatMsg["memories"]; approval: ChatMsg["approval"] }) => void;
   onMemory?: (m: { stored: { id: number; title: string }[] }) => void;
+  onFacts?: (f: { stored: { id: number; title: string }[] }) => void;
   onVision?: (v: { file: string; status: string; model?: string }) => void;
   onMission?: (m: MissionProgress) => void;
   onError?: (e: string) => void;
@@ -145,6 +146,7 @@ export async function chatStream(message: string, session_id: string | null, ev:
           else if (curEvent === "approval") ev.onApproval?.(d);
           else if (curEvent === "result") ev.onResult?.(d);
           else if (curEvent === "memory") ev.onMemory?.(d);
+          else if (curEvent === "facts") ev.onFacts?.(d);
           else if (curEvent === "vision") ev.onVision?.(d);
           else if (curEvent === "mission") ev.onMission?.(d);
           else if (curEvent === "done") ev.onDone?.(d);
