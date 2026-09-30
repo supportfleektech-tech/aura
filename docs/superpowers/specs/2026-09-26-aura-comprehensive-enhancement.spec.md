@@ -231,35 +231,45 @@ Comprehensive test coverage including unit, integration, and E2E tests for all n
 ### Implementation TODO
 
 ### Backend
-- [ ] Add memory consolidation job
-- [ ] Add fact extraction pipeline
-- [ ] Implement Kanban mission status endpoints
-- [ ] Add slash command router
-- [ ] Implement worker pool with queue
-- [ ] Add scheduled job runner
-- [ ] Optimize database indexes
-- [ ] Add caching layer
-- [ ] Optimize SSE streaming
+
+> Closed by `docs/superpowers/plans/2026-09-30-aura-completion.md`. Plan task in
+> parentheses: memory consolidation (1), fact extraction (2), Kanban endpoints (3),
+> slash command router (5), worker pool (4), caching layer (6), SSE batching (6).
+
+- [x] Optimize database indexes — 12 `CREATE INDEX` in `schema.sql`
+- [ ] Add memory consolidation job — plan Task 1
+- [ ] Add fact extraction pipeline — plan Task 2
+- [ ] Implement Kanban mission status endpoints — plan Task 3
+- [ ] Add slash command router — plan Task 5
+- [ ] Implement worker pool with queue — plan Task 4
+- [ ] Add scheduled job runner — plan Task 4 (the scheduler exists; the mission tick was never wired into it)
+- [ ] Add caching layer — plan Task 6
+- [ ] Optimize SSE streaming — plan Task 6
 
 ### Frontend
-- [ ] Fix ChatThread container (flex, min-height: 0)
-- [ ] Add thinking/final message styling
-- [ ] Implement auto-scroll with "new messages" indicator
-- [ ] Add emoji picker component
-- [ ] Implement slash command palette in Composer
-- [ ] Create Kanban board component with drag-drop
-- [ ] Add mission card modal with real-time updates
-- [ ] Create Commands cheat sheet in Settings
-- [ ] Add performance monitoring
+
+> Closed by `docs/superpowers/plans/2026-09-30-aura-completion.md`. Plan task in
+> parentheses: memory consolidation (1), fact extraction (2), Kanban endpoints (3),
+> slash command router (5), worker pool (4), caching layer (6), SSE batching (6).
+
+- [x] Fix ChatThread container (flex, min-height: 0) — `frontend/src/ui.tsx:527`
+- [x] Add thinking/final message styling — `ui.tsx:555-572`, `backend/app/orchestrator.py:1263`
+- [x] Implement auto-scroll with "new messages" indicator — `ui.tsx:487-513` and `ui.tsx:585`
+- [x] Add emoji picker component — `ui.tsx:650-728`
+- [ ] Implement slash command palette in Composer — plan Task 5
+- [ ] Create Kanban board component with drag-drop — plan Task 3
+- [x] Add mission card modal with real-time updates — superseded: `views2/automations.tsx:30` shows per-step state; plan Task 7's perf panel shows live queue state
+- [ ] Create Commands cheat sheet in Settings — plan Task 5
+- [ ] Add performance monitoring — plan Task 7
 
 ### Testing
-- [ ] Unit tests for memory consolidation
-- [ ] Unit tests for command parser
-- [ ] Integration tests for Kanban API
-- [ ] E2E tests for slash commands
-- [ ] E2E tests for chat UX (auto-scroll, thinking style)
-- [ ] Load tests for worker pool
-- [ ] Performance benchmarks
+- [ ] Unit tests for memory consolidation — plan Task 1
+- [ ] Unit tests for command parser — plan Task 5
+- [ ] Integration tests for Kanban API — plan Task 3
+- [ ] E2E tests for slash commands — plan Task 5
+- [ ] E2E tests for chat UX (auto-scroll, thinking style) — plan Task 7; the behaviour ships in `ui.tsx:487-572`, but no test asserts it yet
+- [ ] Load tests for worker pool — plan Task 4
+- [ ] Performance benchmarks — plan Task 6 extends `scripts/benchmark.py`
 
 ---
 
@@ -289,3 +299,12 @@ Comprehensive test coverage including unit, integration, and E2E tests for all n
 - [ ] Worker pool: in-process threads vs separate processes?
 - [ ] Memory consolidation: LLM-based vs rule-based?
 - [ ] Kanban: persist column order per user?
+
+### Missions never advanced in production (found 2026-09-30)
+
+`missions.tick_missions()` and `missions.tick_schedules()` had no call sites
+outside `backend/tests/`. `hermes.start_scheduler_loop` only called
+`hermes.tick_automations()`, so a mission started from the UI or chat sat at
+`status='running'` with every step `pending`, indefinitely. The suite passed
+because the tests called `tick_missions()` by hand. Closed by Task 4 of
+`docs/superpowers/plans/2026-09-30-aura-completion.md`.
