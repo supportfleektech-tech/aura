@@ -164,8 +164,11 @@ class FactsTest(unittest.TestCase):
         # Dedupe is content-only, so the volatile status must not be in content.
         self.assertEqual(active[0]["content"], done[0]["content"])
         self.assertNotIn("done", done[0]["content"])
-        # The status is still visible to a human, just not in the deduped body.
-        self.assertIn("done", done[0]["title"])
+        # Nor in the title: the dedupe path never rewrites a title, so a status
+        # parked there would be a permanently stale claim. Both facts, both
+        # fields, status-free.
+        self.assertEqual(active[0]["title"], done[0]["title"])
+        self.assertNotIn("done", done[0]["title"])
 
         first = facts.harvest("projects.list", {"projects": [
             {"id": 91, "name": "Statusy", "status": "active"}]})
@@ -178,6 +181,82 @@ class FactsTest(unittest.TestCase):
         self.assertEqual(second[0]["id"], first[0]["id"])
         self.assertEqual(len(db.q(
             "SELECT id FROM memories WHERE content LIKE '%Statusy%' AND deleted_at IS NULL")), 1)
+
+    def test_project_fact_title_carries_no_status(self):
+        """The status is gone from `title` too, not relocated to it.
+
+        The dedupe path (`memory.store`) bumps `last_confirmed`/`importance` and
+        never rewrites a title, so any status left in the title is stale
+        forever — and the title is the field a human reads. This pins the
+        invariant across every status, not just the one transition
+        `test_project_status_change_reconfirms_one_row` exercises.
+        """
+        for status in ("active", "done", "paused", "at_risk", None, "", "BLOCKED"):
+            out = facts.extract("projects.list", {"projects": [
+                {"id": 92, "name": "Titled", "status": status}]})
+            self.assertEqual(len(out), 1, (status, out))
+            self.assertEqual(out[0]["title"], "Project: Titled", (status, out[0]))
+            if status:  # `assertNotIn("")` is vacuously false, so skip empty
+                self.assertNotIn(str(status).lower(), out[0]["title"].lower(), status)
+                self.assertNotIn(str(status).lower(), out[0]["content"].lower(), status)
+
+    # ---------- a re-confirmation must not weaken an existing sensitivity ------
+
+    def test_dedupe_upgrades_existing_normal_row_to_private(self):
+        """A `private` fact deduped onto a `normal` row must upgrade the row.
+
+        `observe` stores chat-derived memories with the scanner's verdict, which
+        has no email/phone pattern, so a contact written into chat first lands
+        as `normal`. The client fact then dedupes onto it (content Jaccard
+        3/4 = 0.75 > 0.55). Before this was guarded, the row kept `normal` and
+        stayed cloud-groundable — the `private` marking silently did nothing.
+        """
+        # Distinctive tokens: this row stays in the shared test DB for the rest
+        # of the run, so it must not Jaccard-overlap any other fixture.
+        # Real chat path first: no `sensitivity` argument, so the scanner runs.
+        observed = memory.memory_engine.observe(
+            "My contact is Vesper Quibblegram vesper.quibblegram@zephyr.example")
+        self.assertEqual(len(observed), 1, observed)
+        self.assertEqual(observed[0]["sensitivity"], "normal", observed[0])
+
+        row = domain.create_client(domain.ClientIn(
+            name="Vesper Quibblegram", email="vesper.quibblegram@zephyr.example"))
+        stored = facts.harvest("clients.create", row)
+        self.assertEqual(len(stored), 1, stored)
+        # Same row, re-confirmed — not a second copy.
+        self.assertTrue(stored[0].get("deduped"), stored[0])
+        self.assertEqual(stored[0]["id"], observed[0]["id"])
+        self.assertEqual(stored[0]["sensitivity"], "private", stored[0])
+        self.assertEqual(len(db.q(
+            "SELECT id FROM memories WHERE content LIKE '%vesper.quibblegram@zephyr.example%'"
+            " AND deleted_at IS NULL")), 1)
+
+        # The invariant that matters: not cloud-groundable under ANY policy,
+        # including the weakest one.
+        from app.inference import filter_cloud_memories
+        for policy in ("strict", "relaxed"):
+            kept, withheld = filter_cloud_memories([stored[0]], policy=policy)
+            self.assertEqual(kept, [], (policy, kept))
+            self.assertEqual(withheld, 1, (policy, withheld))
+
+    def test_dedupe_never_downgrades_a_private_row(self):
+        """The merge is one-way: a weaker incoming label cannot relax a row."""
+        priv = memory.memory_engine.store(
+            "Private row", "Zeta downgrade probe zeta@priv.example",
+            sensitivity="private")
+        self.assertEqual(priv["sensitivity"], "private", priv)
+        again = memory.memory_engine.store(
+            "Private row", "Zeta downgrade probe zeta@priv.example",
+            sensitivity="normal")
+        self.assertTrue(again.get("deduped"), again)
+        self.assertEqual(again["id"], priv["id"])
+        self.assertEqual(again["sensitivity"], "private", again)
+        # `sensitive` is the *weaker* label here (strict-only withholding), so
+        # it must not displace `private` either.
+        third = memory.memory_engine.store(
+            "Private row", "Zeta downgrade probe zeta@priv.example",
+            sensitivity="sensitive")
+        self.assertEqual(third["sensitivity"], "private", third)
 
     # ---------- harvest / wiring ----------
 

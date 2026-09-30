@@ -23,6 +23,13 @@ _SENSITIVE_PATTERNS = [
     r"\b\d{3,4}[\s-]?\d{3,4}[\s-]?\d{3,4}\b",  # possible card/ID numbers
     r"\b(mental health|diagnos|therapy|medication|hiv|std)\b",
 ]
+# Shareability order, weakest to strongest. `private` outranks `sensitive`
+# because `inference.filter_cloud_memories` withholds `private` under BOTH the
+# strict and the relaxed policy, while `sensitive` is strict-only — so a
+# `sensitive` row is still cloud-groundable under `relaxed` and a `private` one
+# never is. Used to merge a re-confirmed row's label with the incoming one
+# without ever weakening it.
+_SENSITIVITY_RANK = {"normal": 0, "sensitive": 1, "private": 2}
 _STOP = set("the a an and or of to in on for with is are was were be been it its this that you your i my me we our they their he she him her at as by from about into over after before between out up down off over under again once here there when where which who whom what how why can could should would do does did have has had not no yes if than so very just also more most other some such only own same than too".split())
 
 
@@ -141,8 +148,19 @@ class MemoryEngine:
         dup = self._duplicate_of(content)
         if dup:
             _before = db.qone("SELECT * FROM memories WHERE id=?", (dup,))
+            # A re-confirmation must never weaken an existing label. Otherwise a
+            # fact that arrives as `private` (e.g. a client contact — the
+            # scanner has no email/phone pattern) and dedupes onto a row an
+            # earlier `observe` stored as `normal` would inherit that weaker
+            # label and stay cloud-groundable, silently undoing the marking.
+            existing = _before.get("sensitivity") or "normal"
+            if _SENSITIVITY_RANK.get(sensitivity, 0) > _SENSITIVITY_RANK.get(existing, 0):
+                merged_sens = sensitivity
+            else:
+                merged_sens = existing
             db.run("UPDATE memories SET last_confirmed=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
-                   "importance=MIN(1.0, importance+0.05) WHERE id=?", (dup,))
+                   "importance=MIN(1.0, importance+0.05), sensitivity=? WHERE id=?",
+                   (merged_sens, dup))
             from . import undo as _u
             _u.record("memory.store", "update", "memories", dup, _before,
                       f"memories#{dup} re-confirmed (dedup)")

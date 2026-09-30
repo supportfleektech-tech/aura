@@ -51,13 +51,17 @@ def _project_fact(p: dict) -> dict | None:
     name = str(p.get("name") or p.get("title") or "").strip()
     if not name:
         return None
-    status = p.get("status")
-    title = f"Project: {name} ({status})" if status else f"Project: {name}"
-    # `status` is deliberately absent from the deduped `content`. `store` dedupes
-    # on content alone (>0.55 Jaccard over tokens), and "Kopilot is active" vs
-    # "Kopilot is done" scores ~0.33 — every status change would insert a rival
-    # row and leave the stale one behind. The volatile field lives in `title`.
-    return {"title": title[:72], "content": f"{name} is a tracked project",
+    # `status` is deliberately absent from BOTH `title` and `content`. `store`
+    # dedupes on content alone (>0.55 Jaccard over tokens), and "Kopilot is
+    # active" vs "Kopilot is done" scores ~0.33 — every status change would
+    # insert a rival row and leave the stale one behind. Parking the status in
+    # `title` dodged that but caused a worse bug: the dedupe path never rewrites
+    # a title (it bumps only `last_confirmed` and `importance`), so a row titled
+    # "Project: Kopilot (active)" claims "active" forever, on the one surface a
+    # human actually reads. A fact has no third field that is not title or
+    # content, so the status is dropped outright: a missing status is
+    # recoverable from the projects table, a stale one is not.
+    return {"title": f"Project: {name}"[:72], "content": f"{name} is a tracked project",
             "domain": "career", "mtype": "semantic", "confidence": 0.8,
             "importance": 0.6, "sensitivity": None}
 
