@@ -105,6 +105,8 @@ SCHEMA: dict[str, tuple[Any, str, Any]] = {
     "cost_monthly_cap_usd": (0.0, "float", (0.0, 100000.0)),
     "proactive_muted": ("", "str", 200),
     "retention_last_run": (0, "int", (0, 2**31)),
+    "consolidate_enabled": (True, "bool", None),
+    "consolidate_last_run": (0, "int", (0, 2**31)),
     # secrets (write-only via API)
     "openrouter_key": ("", "secret", 300),
     "openai_key": ("", "secret", 300),
@@ -255,6 +257,8 @@ def public_view() -> dict:
             sources[key] = "db" if _db_has(key) else ("env" if _env_set(key) else "default")
     values.pop("retention_last_run", None)
     sources.pop("retention_last_run", None)
+    values.pop("consolidate_last_run", None)
+    sources.pop("consolidate_last_run", None)
     return {"values": values, "secrets": secrets, "sources": sources}
 
 

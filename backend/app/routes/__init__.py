@@ -12,6 +12,7 @@ from .notifications import notes_r
 from .push import push_r
 from .approvals import approvals_r
 from .missions import missions_r
+from .consolidation import consol_r
 from .gateway import gateway_r
 from .briefings import brief_r
 from .mail import mail_r
@@ -28,5 +29,5 @@ ROUTERS = [
     tasks_r, clients_r, projects_r, career_r, personal_r, memory_r, auto_r,
     activity_r, notes_r, approvals_r, gateway_r, push_r,
     brief_r, mail_r, cal_r, sync_r, pro_r, undo_r, cost_r, analytics_r,
-    missions_r, home_r,
+    missions_r, home_r, consol_r,
 ]
