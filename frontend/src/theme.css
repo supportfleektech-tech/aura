@@ -526,7 +526,11 @@ input[type="range"].slider { accent-color: var(--violet); width: 150px; padding:
 .boardcol { background: var(--surface2); border: 1px solid var(--border); border-radius: 14px; padding: 10px; min-height: 160px; display: flex; flex-direction: column; gap: 8px; }
 .boardcol.over { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan) inset; }
 .boardcol header { display: flex; justify-content: space-between; align-items: center; }
-.boardcard { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; cursor: grab; }
+.boardcard { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; cursor: grab; overflow-wrap: anywhere; }
+/* A goal is free text and can be one unbroken 4000-char string; without a break
+   opportunity it widens the column and breaks the whole grid. Clamp the goal so a
+   long one cannot take over the card (the full text stays in the title attr). */
+.boardcard > strong { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .boardcard:active { cursor: grabbing; }
 @media (max-width: 900px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px) { .board { grid-template-columns: 1fr; } }

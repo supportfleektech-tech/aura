@@ -45,6 +45,11 @@ class BoardTest(unittest.TestCase):
         for k in ("id", "goal", "status", "steps_total", "steps_done",
                   "next_run_at", "created_at", "updated_at"):
             self.assertIn(k, card)
+        # The board loads at most `limit` missions, so `total` must be the real
+        # count — never the truncated column sum the UI would otherwise report.
+        body = r.json()
+        self.assertGreaterEqual(body["total"], sum(body["counts"].values()))
+        self.assertEqual(body["total"], db.qone("SELECT COUNT(*) AS n FROM missions WHERE user_id=1")["n"])
 
     def test_move_start_then_pause(self):
         mid = self._mission("draft")
@@ -65,12 +70,22 @@ class BoardTest(unittest.TestCase):
     def test_move_out_of_done_is_409(self):
         mid = self._mission("draft")
         self.c.post(f"/api/missions/{mid}/control", json={"action": "start"})
-        missions.tick_missions()
+        # tick_missions() is `ORDER BY id LIMIT 5`, so one call may not reach this
+        # mission if other tests left lower-id running missions behind. Keep
+        # ticking until this one settles instead of assuming a single batch.
+        for _ in range(10):
+            if self.c.get(f"/api/missions/{mid}").json()["status"] != "running":
+                break
+            missions.tick_missions()
         self.assertEqual(self.c.get(f"/api/missions/{mid}").json()["status"], "done")
         # No path out of done, in any direction — not just back to the backlog.
         for col in ("backlog", "running", "awaiting"):
             r = self.c.post("/api/board/move", json={"mission_id": mid, "column": col})
             self.assertEqual(r.status_code, 409, f"done -> {col} was not refused: {r.text}")
+            # Pin the router's own guard: the reason must name the move, not
+            # set_status' unrelated "status must be start|pause|cancel" string.
+            self.assertIn("cannot move", r.json()["detail"],
+                          f"done -> {col} 409 came from the wrong layer: {r.text}")
         self.assertEqual(self.c.get(f"/api/missions/{mid}").json()["status"], "done")
 
     def test_bad_column_and_missing_mission(self):
@@ -81,18 +96,26 @@ class BoardTest(unittest.TestCase):
                                      json={"mission_id": 999999, "column": "running"}).status_code, 404)
         self.assertEqual(self.c.post("/api/board/move",
                                      json={"mission_id": "abc", "column": "running"}).status_code, 400)
+        # Rejected requests must leave the mission exactly as it was.
+        self.assertEqual(self.c.get(f"/api/missions/{mid}").json()["status"], "draft")
 
     def test_same_column_move_is_a_noop(self):
         mid = self._mission("draft")
         r = self.c.post("/api/board/move", json={"mission_id": mid, "column": "backlog"})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["mission"]["status"], "draft")
+        # The echoed card could be hardcoded; the stored row must still be draft.
+        self.assertEqual(self.c.get(f"/api/missions/{mid}").json()["status"], "draft")
 
     def test_board_includes_a_stepless_mission(self):
         m = self.c.post("/api/missions", json={"goal": "T-Board empty"}).json()
         r = self.c.get("/api/board")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(m["id"], [x["id"] for col in r.json()["columns"] for x in col["missions"]])
+        cards = [x for col in r.json()["columns"] for x in col["missions"] if x["id"] == m["id"]]
+        self.assertEqual(len(cards), 1, "stepless mission missing from the board")
+        # The zero-step contract is what the card renders ("0/0 steps"); a _card
+        # that dropped the step fields would still satisfy an id-only assertion.
+        self.assertEqual((cards[0]["steps_total"], cards[0]["steps_done"]), (0, 0))
 
 
 if __name__ == "__main__":

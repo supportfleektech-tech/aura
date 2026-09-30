@@ -43,13 +43,22 @@ def _card(m: dict) -> dict:
             "updated_at": m.get("updated_at", "")}
 
 
+BOARD_LIMIT = 100
+
+
 @board_r.get("")
 def board():
     by_col: dict[str, list[dict]] = {k: [] for k, _, _ in COLUMNS}
-    for m in _m.list_missions(limit=100):
+    for m in _m.list_missions(limit=BOARD_LIMIT):
         by_col[_STATUS_TO_COLUMN.get(m["status"], "backlog")].append(_card(m))
+    # Only the newest BOARD_LIMIT missions are loaded, so the column counts are
+    # a truncated figure. Report the real total next to them rather than letting
+    # the client present a partial list as the whole truth.
+    row = _m.db.qone("SELECT COUNT(*) AS n FROM missions WHERE user_id=1")
+    total = int(row["n"]) if row else 0
     return {"columns": [{"key": k, "label": lab, "missions": by_col[k]} for k, lab, _ in COLUMNS],
-            "counts": {k: len(v) for k, v in by_col.items()}}
+            "counts": {k: len(v) for k, v in by_col.items()},
+            "total": total, "limit": BOARD_LIMIT}
 
 
 @board_r.post("/move")

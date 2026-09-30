@@ -28,13 +28,18 @@ export function KanbanView() {
   };
 
   const cols: BoardColumn[] = data?.columns || [];
+  const shown = Object.values(data?.counts || {}).reduce((a, b) => a + b, 0);
+  // `total` is the real mission count from the server; the board only loads the
+  // newest `limit` of them, so `shown` alone would report a truncated number as
+  // if it were the whole truth.
+  const total = (data as { total?: number } | undefined)?.total ?? shown;
 
   return (
     <div className="view">
       <div className="vhead">
         <h2><Icon n="rocket" s={20} /> Missions Board</h2>
         <Pill c="violet">
-          {Object.values(data?.counts || {}).reduce((a, b) => a + b, 0)} missions
+          {total > shown ? `${shown} of ${total}` : shown} missions
         </Pill>
       </div>
       <div className="board" data-testid="board">
@@ -48,10 +53,20 @@ export function KanbanView() {
             onDrop={(e) => {
               e.preventDefault();
               setOver(null);
-              if (dragId === null) return;
-              const card = c.missions.find((m) => m.id === dragId);
+              const id = dragId;
               setDragId(null);
-              if (card) void move(card, c.key);
+              if (id === null) return;
+              // Resolve the card across every column: it is dragged *from*
+              // somewhere else, so searching the drop target alone never finds
+              // it. Only the board's own card set can be dragged, so a miss here
+              // means the board re-rendered mid-drag.
+              const src = cols.find((x) => x.missions.some((m) => m.id === id));
+              const card = src?.missions.find((m) => m.id === id);
+              if (!card) return;
+              // A drop onto the column it is already in is a no-op, not a
+              // success toast for a move that cannot happen.
+              if (src.key === c.key) return;
+              void move(card, c.key);
             }}
           >
             <header><strong>{c.label}</strong><Pill c="blue">{c.missions.length}</Pill></header>
@@ -63,7 +78,7 @@ export function KanbanView() {
                 onDragStart={(e) => { setDragId(m.id); e.dataTransfer.setData("text/plain", String(m.id)); }}
                 onDragEnd={() => setDragId(null)}
               >
-                <strong>{m.goal}</strong>
+                <strong title={m.goal}>{m.goal}</strong>
                 <small>{m.steps_done}/{m.steps_total} steps · {m.status}</small>
                 <Row icon="clock"
                   title={m.next_run_at ? `Next ${m.next_run_at.slice(0, 16).replace("T", " ")}` : "No schedule"} />
