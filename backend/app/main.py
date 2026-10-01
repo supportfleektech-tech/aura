@@ -70,9 +70,12 @@ def _startup():
     # all test modules share one database, so the thread keeps settling rows
     # other modules still own for the whole run (measured: 3 of 13 full-suite
     # runs failing where the baseline was 6 of 6 green). AURA_DISABLE_SCHEDULER=1
-    # keeps it off; tests set it (see tests/__init__.py, which every test run
-    # imports) and nothing that serves real traffic does.
-    if os.environ.get("AURA_DISABLE_SCHEDULER") != "1":
+    # keeps it off; tests set it (see tests/test_env.py, which every test run
+    # imports) and nothing that serves real traffic does. Read as a set of
+    # truthy strings rather than `== "1"`, so an exported `=true` or `=yes`
+    # does not silently start the thread and reintroduce the flake.
+    if os.environ.get("AURA_DISABLE_SCHEDULER", "").strip().lower() not in (
+            "1", "true", "yes", "on"):
         start_scheduler_loop()
     print(
         f"AURA ready · privacy={prefs.get('privacy')} · cloud={model_router.cloud.provider}:{'on' if model_router.cloud.configured() else 'off'} · "

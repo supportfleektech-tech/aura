@@ -17,28 +17,41 @@ import atexit
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 os.environ.setdefault("AURA_DISABLE_SCHEDULER", "1")
 
+# Only prefixes this suite uses exclusively. `aura-restore-` is deliberately
+# absent: app/backup.py uses the same prefix for an in-flight production
+# restore, so sweeping it could delete a real server's work dir mid-extraction.
+# That test's own dir is small enough to not be worth the risk.
 _SCRATCH_PREFIXES = (
     "aura-test-",
-    "aura-restore-",
     "aura-watch-",
     "aura-consol-",
     "aura-facts-",
     "aura-board-",
     "aura-workers-",
-    "aura-cache-",
-    "aura-sse-",
 )
+
+# Two overlapping suite runs share these prefixes, so a young directory may
+# belong to a run that is still going. Only reclaim what is old enough to have
+# been abandoned.
+_ABANDONED_AFTER_S = 3600
 
 
 def _reclaim_scratch() -> None:
     root = Path(tempfile.gettempdir())
+    cutoff = time.time() - _ABANDONED_AFTER_S
     for prefix in _SCRATCH_PREFIXES:
         for path in root.glob(f"{prefix}*"):
-            shutil.rmtree(path, ignore_errors=True)
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                continue
 
 
 atexit.register(_reclaim_scratch)

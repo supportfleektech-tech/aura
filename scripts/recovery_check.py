@@ -3,6 +3,7 @@ import io
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -16,6 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.scratch = Path(tempfile.mkdtemp(prefix="aura-recovery-"))
+        # Each case runs in its own subprocess, so this cleanup is the only thing
+        # standing between a run and a pile of abandoned scratch DBs. Leaked
+        # dirs filled a disk once and surfaced as unrelated "database or disk is
+        # full" failures elsewhere.
+        self.addCleanup(shutil.rmtree, self.scratch, True)
         for key in tuple(os.environ):
             if key.startswith(("AURA_", "OLLAMA_", "HERMES_")) or key == "LITESTREAM_REPLICA":
                 os.environ.pop(key)
