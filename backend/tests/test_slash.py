@@ -235,6 +235,100 @@ class SlashTest(unittest.TestCase):
         # And the survivors are no longer offered.
         self.assertEqual(memory_engine.forget_candidates("zxqvwmn kaleidoscopic"), [])
 
+    def test_forget_multi_word_topic_needs_every_word(self):
+        """A multi-word topic is an intersection, not a union.
+
+        `_fts_query` OR-joins tokens, and `forget_candidates` inherited that:
+        `/forget old address` matched every row containing *either* word. On the
+        corpus below — the re-reviewer's, including the row that matches on
+        `old` alone — it deleted 5 of 6, taking out "Cheap wine — an old
+        vintage from 2011" and "The old boiler needs replacing before winter"
+        along with the two address rows. That is the command's own registered
+        example (`/forget old address confirm`), so a user typing the
+        documented form destroyed unrelated memories.
+
+        The general search path keeps its OR-join: recall wants "any of these
+        words". A destructive topic-delete wants "this subject".
+        """
+        rows = {
+            "old_kilimani": "The old address was 14 Kilimani Road, moved in 2019",
+            "old_flat": "My old address is the Kilimani flat with the blue gate",
+            "new_drive": "New address is Riverside Drive, apartment 4B",
+            "vintage": "Cheap wine — an old vintage from 2011",
+            "boiler": "The old boiler needs replacing before winter",
+        }
+        ids = {k: slash_memory_store(v)["id"] for k, v in rows.items()}
+
+        def live(key):
+            return db.qone("SELECT deleted_at FROM memories WHERE id=?",
+                           (ids[key],))["deleted_at"] is None
+
+        for key in ids:  # fixture sanity: everything starts live
+            self.assertTrue(live(key), key)
+
+        wet = slash.execute("/forget old address confirm")
+        self.assertTrue(wet["ok"], wet)
+        titles = wet["result"]["titles"]
+        # The two rows actually about the old address went.
+        self.assertFalse(live("old_kilimani"), titles)
+        self.assertFalse(live("old_flat"), titles)
+        self.assertIn("old address", " ".join(titles).lower(), titles)
+        # The three rows that matched on one word did not.
+        self.assertTrue(live("vintage"), f"an 'old' mention was deleted: {titles}")
+        self.assertTrue(live("boiler"), f"an 'old' mention was deleted: {titles}")
+        self.assertTrue(live("new_drive"), f"an 'address' mention was deleted: {titles}")
+
+    def test_forget_single_word_topic_still_matches_every_row_with_it(self):
+        """The intersection must not narrow a one-word topic to nothing."""
+        a = slash_memory_store("Lease renewal is due on the first of April")["id"]
+        b = slash_memory_store("The lease for the Kilimani flat runs to March")["id"]
+        wet = slash.execute("/forget lease confirm")
+        self.assertTrue(wet["ok"], wet)
+        self.assertGreaterEqual(wet["result"]["forgotten"], 2, wet["result"])
+        for mid in (a, b):
+            self.assertIsNotNone(
+                db.qone("SELECT deleted_at FROM memories WHERE id=?", (mid,))["deleted_at"],
+                f"a single-word topic stopped matching id={mid}")
+
+    def test_forget_renders_a_sentence_not_a_json_dump(self):
+        """The transcript line for a destructive command is not machine output.
+
+        `text` used to be `json.dumps` of the whole result, so a confirmed
+        forget read `{"forgotten": 3, "titles": [...]}` in the chat bubble. The
+        structured fields stay for programmatic callers; only `text` changes.
+        """
+        a = slash_memory_store("The old address was 14 Kilimani Road")["id"]
+        slash_memory_store("My old address is the Kilimani flat")
+
+        dry = slash.execute("/forget old address")
+        self.assertNotIn("{", dry["text"], dry["text"])
+        self.assertIn("Nothing has been deleted yet", dry["text"])
+        self.assertIn("Kilimani Road", dry["text"])
+        self.assertIn("/forget old address confirm", dry["text"])
+
+        wet = slash.execute("/forget old address confirm")
+        self.assertNotIn("{", wet["text"], wet["text"])
+        self.assertTrue(wet["text"].startswith("Deleted 2 memories"), wet["text"])
+        self.assertIn("Kilimani Road", wet["text"])
+        # Structured fields are unchanged, for callers that want them.
+        self.assertEqual(wet["result"]["forgotten"], 2)
+        self.assertEqual(len(wet["result"]["titles"]), 2)
+        self.assertTrue(wet["result"]["confirmed"])
+        self.assertIsNotNone(db.qone("SELECT deleted_at FROM memories WHERE id=?",
+                                     (a,))["deleted_at"])
+
+        miss = slash.execute("/forget zxqvwmn kaleidoscopic")
+        self.assertIn("No memories about", miss["text"], miss["text"])
+        self.assertEqual(miss["result"]["forgotten"], 0)
+
+    def test_result_text_is_a_sentence_when_a_handler_supplies_one(self):
+        """The general rule, so `/ask` and `/think` stop rendering `{"text": …}`."""
+        self.assertEqual(slash.execute("/memories")["text"], slash._as_text(
+            slash.execute("/memories")["result"]))
+        r = slash.execute("/think why is CI red")
+        self.assertFalse(r["text"].startswith("{") and '"text"' in r["text"],
+                         f"a model answer was dumped as JSON: {r['text'][:120]}")
+
     def test_forget_confirm_is_the_only_way_to_delete(self):
         # A topic whose text is literally "confirm" is still forgetable, because
         # the flag is only a *trailing* token with something left over.

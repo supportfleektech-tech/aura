@@ -310,7 +310,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           // send is deferred to `finally` (below) rather than fired here, because
           // this stream has not ended yet.
           const prompt = (r.result as { prompt?: string } | null)?.prompt;
-          if (typeof prompt === "string" && prompt.trim() && chainDepth < MAX_COMMAND_CHAIN) {
+          if (typeof prompt === "string" && prompt.trim()) {
+            if (chainDepth >= MAX_COMMAND_CHAIN) {
+              // The cap is a hard stop, and it must be *stated*. Falling through
+              // to the generic render branch below is the bug: `execute()`'s
+              // `text` for a custom command is the user's own prompt, so the
+              // transcript ended with the assistant apparently repeating back
+              // something the user typed and never answered. Better an honest
+              // "here is why the chain ended" than a fabricated utterance.
+              patch({ text: `Command chain stopped after ${MAX_COMMAND_CHAIN} steps — `
+                           + `${r.command} was not run.` });
+              refresh();
+              return;
+            }
             if (target) setView(target as View);
             patch({ text: `→ ${r.command}` });
             pendingPromptRef.current = prompt;

@@ -98,6 +98,32 @@ def _fts_query(text: str) -> str:
     return " OR ".join(toks) if toks else ""
 
 
+def _topic_fts(topic: str) -> str:
+    """FTS5 MATCH expression for the *destructive* topic path. Tokens AND-ed.
+
+    `_fts_query` OR-joins, which is right for recall — "any of these words" — but
+    for a topic-delete it is the wrong operation entirely: `/forget old address`
+    came to mean "every memory containing *either* word". Measured on the
+    reviewer's own example, the command's registered invocation
+    (`/forget old address confirm`) deleted 5 of 6 rows, including
+    "Cheap wine — an old vintage from 2011" and "The old boiler needs replacing
+    before winter" (matched on `old` alone) and "New address is Riverside
+    Drive" (matched on `address` alone). A user typing the documented example
+    destroyed unrelated memories; the confirm listing was the only thing between
+    them and the loss.
+
+    AND is what the words mean: memories about the old address, not every memory
+    ever containing "old". A one-word topic is unchanged (an `AND` of one term is
+    that term), so `/forget meeting` and `/forget lease` still behave as before.
+
+    Tokens are double-quoted for the reason `_fts_query`'s caller gives:
+    `_tokens` admits apostrophes and digits, and an unquoted FTS5 token is
+    syntax, not a word.
+    """
+    toks = [t for t in _tokens(topic)][:12]
+    return " AND ".join('"' + t.replace('"', '""') + '"' for t in toks)
+
+
 # Admission criterion for the *destructive* topic-delete path.
 #
 # It is deliberately FTS-membership-only, and the semantic half of the usual
@@ -123,10 +149,11 @@ def _fts_query(text: str) -> str:
 # round — the caller lists candidates and the user confirms, so re-asking with
 # better words is cheap, while deleting an unrelated memory is not.
 def _is_topic_match(fts_hit: bool) -> bool:
-    """Did this row match one of the topic's tokens literally?
+    """Did this row carry the topic's words literally?
 
     Membership, not a magnitude. See the comment above for the two
-    measurements that rule out a threshold here.
+    measurements that rule out a threshold here. For a multi-word topic the
+    membership is against `_topic_fts`'s `AND` — every token, not one of them.
     """
     return bool(fts_hit)
 
@@ -351,18 +378,15 @@ class MemoryEngine:
            because that row fell outside the 50-row window.
 
         So this asks the question directly, with no ranking and no window: did
-        FTS match one of the topic's tokens at all? `_fts_query` OR-joins
-        tokens, which is why the *caller* must confirm before deleting — see
-        `_mem_forget`.
+        FTS match every one of the topic's words? See `_topic_fts` for why the
+        tokens are AND-ed here while `search` OR-joins them, and why the
+        *caller* must still confirm before deleting — see `_mem_forget`.
         """
-        toks = [t for t in _tokens(topic)][:12]
-        if not toks:
+        fq = _topic_fts(topic)
+        if not fq:
             return []
         fts_ids: set[int] = set()
         try:
-            # Double-quote each token: `_tokens` admits apostrophes and digits,
-            # and an unquoted FTS5 token is syntax, not a word.
-            fq = " OR ".join('"' + t.replace('"', '""') + '"' for t in toks)
             for r in db.q(
                 "SELECT m.id, m.title FROM memories_fts f "
                 "JOIN memories m ON m.id=f.rowid WHERE memories_fts MATCH ? "

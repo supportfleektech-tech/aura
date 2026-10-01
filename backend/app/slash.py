@@ -71,20 +71,33 @@ def _mem_store(args: str) -> dict:
     return {"memory": row}
 
 
+def _titles(titles: list[str], cap: int = 5) -> str:
+    """`"a", "b", "c" and 2 more` — long enough to recognise the rows, short
+    enough to read in a chat bubble. Titles are user text, so each is capped."""
+    shown = [f'"{t[:60]}"' for t in titles[:cap]]
+    more = len(titles) - len(shown)
+    return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+
+
 def _mem_forget(args: str) -> dict:
     """Two-step delete: list the candidates, delete only on an explicit confirm.
 
-    `_fts_query` OR-joins up to 12 tokens, so `/forget meeting` is *every*
-    memory containing "meeting" — which is the correct answer to the question
-    the user asked, and the wrong thing to do to their memory store on one
-    keystroke. So a bare `/forget <topic>` reports and changes nothing, and the
-    destructive half needs the literal word `confirm`:
+    A bare `/forget <topic>` reports and changes nothing; the destructive half
+    needs the literal word `confirm`:
 
         /forget meeting             -> 12 candidates, nothing deleted
         /forget meeting confirm     -> deletes exactly those 12
 
     Two-step rather than an interactive prompt so it behaves identically from
     chat and from the palette, where there is no shared modal to own.
+
+    `text` is the transcript line, and it is a sentence rather than
+    `json.dumps` of the result: this command deletes things, so what the user
+    reads afterwards is the part that matters. The structured fields stay for
+    programmatic callers (`_result_text` prefers `text`; every other key is
+    untouched). A multi-word topic selects rows containing *every* word
+    (`memory._topic_fts`), so `/forget old address` means memories about the
+    old address — not every memory containing "old".
     """
     _need(args, "/forget <topic> [confirm]")
     from .memory import memory_engine
@@ -98,11 +111,26 @@ def _mem_forget(args: str) -> dict:
         # user would be told how many went without being shown what.
         cands = memory_engine.forget_candidates(topic)
         n = memory_engine.forget_topic(topic)
-        return {"forgotten": n, "titles": [c["title"] for c in cands], "confirmed": True}
+        titles = [c["title"] for c in cands]
+        if not n:
+            line = f'No memories about "{topic}" matched, so nothing was deleted.'
+        else:
+            line = (f"Deleted {n} {'memory' if n == 1 else 'memories'} about "
+                    f'"{topic}": {_titles(titles)}')
+        return {"forgotten": n, "titles": titles, "confirmed": True, "text": line}
     topic = (args or "").strip()
     cands = memory_engine.forget_candidates(topic)
-    return {"forgotten": 0, "candidates": cands, "count": len(cands),
-            "confirmed": False, "confirm_with": f"/forget {topic} confirm"}
+    titles = [c["title"] for c in cands]
+    n = len(titles)
+    if not n:
+        line = f'No memories about "{topic}" matched.'
+    else:
+        line = (f"{n} {'memory' if n == 1 else 'memories'} about \"{topic}\" would be deleted: "
+                f"{_titles(titles)}. Nothing has been deleted yet — say "
+                f"/forget {topic} confirm to go ahead.")
+    return {"forgotten": 0, "candidates": cands, "count": n,
+            "confirmed": False, "confirm_with": f"/forget {topic} confirm",
+            "text": line}
 
 
 def _mem_search(args: str) -> dict:
@@ -370,6 +398,24 @@ def _as_text(value: Any) -> str:
             return ""
 
 
+def _result_text(result: Any) -> str:
+    """The transcript line for a handler's result.
+
+    `json.dumps` is the fallback: honest for a structured answer, useless for a
+    human one. A confirmed `/forget` rendered as
+    `{"forgotten": 3, "titles": ["…"]}` in the transcript, so the one line the
+    user reads after a destructive command was machine output. A handler that
+    puts a non-empty `text` in its result owns that line; every other key is left
+    in place for programmatic callers. `/ask` and `/think` already return
+    `{"text": …}` and were being dumped as `{"text": "…"}` for the same reason.
+    """
+    if isinstance(result, dict):
+        t = result.get("text")
+        if isinstance(t, str) and t.strip():
+            return t[:4000]
+    return _as_text(result)
+
+
 def _none() -> dict:
     return {"handled": False, "ok": False, "command": "", "result": None, "text": "", "view": None}
 
@@ -399,7 +445,7 @@ def execute(text: str) -> dict:
                 "text": _as_text(f"{type(e).__name__}: {e}")[:200], "view": None}
     try:
         return {"handled": True, "ok": True, "command": name, "result": result,
-                "text": _as_text(result),
+                "text": _result_text(result),
                 "view": result.get("view") if isinstance(result, dict) else None}
     except Exception as e:  # noqa: BLE001
         return {"handled": True, "ok": False, "command": name, "result": None,

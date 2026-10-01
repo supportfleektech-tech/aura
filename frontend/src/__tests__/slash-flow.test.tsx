@@ -161,4 +161,28 @@ describe("custom command prompt reaches the model — FR-CMD-004", () => {
       .toEqual(["/brief", "summarise my day", "summarise my day",
                 "summarise my day", "summarise my day"]);
   });
+
+  it("a chain that hits the cap says so, never the user's own prompt", async () => {
+    // The cap is the boundary the chain fix introduced, and at the boundary the
+    // prompt branch fell through to the generic render branch — where
+    // `execute()`'s `text` for a custom command *is* the user's prompt. So the
+    // 5th hop put the prompt in the transcript as if AURA had said it: the exact
+    // defect the chain limit was added next to, reintroduced one level deeper.
+    const PROMPT = "summarise my day";
+    const calls = stub(SLASH_RESULT, true);
+    renderStore();
+    fireEvent.click(screen.getByText("run"));
+    await waitFor(() => expect(chats(calls).length).toBe(5));
+    // The 5th turn's reply has to land before the terminal state can exist.
+    await waitFor(() => expect(msgs.some((m) => /command chain/i.test(m.text))).toBe(true),
+                 { timeout: 5000 });
+
+    const spoken = msgs.filter((m) => m.role !== "user");
+    expect(spoken.some((m) => m.text.includes(PROMPT)))
+      .toBe(false);
+    // …and the stop is explained, rather than the transcript just going quiet.
+    expect(spoken.some((m) => /command chain/i.test(m.text))).toBe(true);
+    // Nothing further was sent either — the cap is a hard stop.
+    expect(chats(calls)).toHaveLength(5);
+  });
 });
