@@ -5,15 +5,9 @@ import tempfile
 _tmp = tempfile.mkdtemp(prefix="aura-workers-")
 os.environ["AURA_DB_PATH"] = os.path.join(_tmp, "test.db")
 
-# Keep the 30s scheduler daemon thread out of the test process. Every
-# TestClient(app).__enter__ runs app.main._startup, which starts another one,
-# and they all tick/consolidate/drain the single database every test module
-# shares — so the thread settles rows other modules are about to assert on.
-# Set here at import time rather than on the command line because `unittest
-# discover` imports every test module while building the suite and only then
-# runs anything: by the first TestClient context manager this is already in
-# place, whether the run is `discover -s tests` or this module alone.
-os.environ["AURA_DISABLE_SCHEDULER"] = "1"
+# AURA_DISABLE_SCHEDULER is set in tests/test_env.py (discover) and
+# tests/__init__.py (tests.test_*). Not here: a run that never imports this
+# module would then leave the scheduler thread live.
 
 import inspect  # noqa: E402
 import calendar  # noqa: E402

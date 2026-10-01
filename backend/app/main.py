@@ -70,8 +70,8 @@ def _startup():
     # all test modules share one database, so the thread keeps settling rows
     # other modules still own for the whole run (measured: 3 of 13 full-suite
     # runs failing where the baseline was 6 of 6 green). AURA_DISABLE_SCHEDULER=1
-    # keeps it off; tests set it (see tests/test_workers.py) and nothing that
-    # serves real traffic does.
+    # keeps it off; tests set it (see tests/__init__.py, which every test run
+    # imports) and nothing that serves real traffic does.
     if os.environ.get("AURA_DISABLE_SCHEDULER") != "1":
         start_scheduler_loop()
     print(
