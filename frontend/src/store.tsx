@@ -4,7 +4,20 @@ import { api, chatStream, ChatMsg, Dashboard, OrbState, uid } from "./api";
 import { createApprovalAlerts, playAlertSound } from "./alerts";
 import { getServer, loadServerSettings, voicePreferenceKey } from "./prefs";
 
-export type View = "home" | "career" | "clients" | "personal" | "inbox" | "calendar" | "memory" | "sessions" | "voice" | "gateway" | "automations" | "board" | "activity" | "analytics" | "smarthome" | "files" | "models" | "terminal" | "feeds" | "settings";
+/** Every view the shell can render, and the single source for the `View` type.
+ *  `App.tsx` renders views with a `view === x` chain and *no default branch*, so
+ *  a name outside this list yields a blank main pane with no error anywhere.
+ *  Deriving the type from the list makes TS-side drift impossible by
+ *  construction; `backend/app/slash.py`'s `VIEWS` mirrors it, and
+ *  `test_slash.py::test_slash_views_match_the_frontend_view_union` fails if the
+ *  two lists ever disagree. */
+export const VIEWS = [
+  "home", "career", "clients", "personal", "inbox", "calendar", "memory",
+  "sessions", "voice", "gateway", "automations", "board", "activity",
+  "analytics", "smarthome", "files", "models", "terminal", "feeds", "settings",
+] as const;
+
+export type View = (typeof VIEWS)[number];
 
 interface Toast { id: string; text: string; kind: "info" | "success" | "warn" | "error" }
 
@@ -218,6 +231,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const speakRef = useRef<((t: string) => void) | null>(null);
   useEffect(() => { speakRef.current = speak; }, [speak]);
+  // A custom command returns its prompt so the *client* sends it as a normal
+  // message. The follow-up has to be deferred until this turn's stream is fully
+  // consumed: firing it inline would let the outer `done` frame land
+  // `setSending(false)` in the middle of the second turn, and would let the
+  // outer `finally` null `chatAbortRef` out from under it.
+  const sendRef = useRef<((t: string, a?: unknown[], depth?: number) => Promise<void>) | null>(null);
+  const pendingPromptRef = useRef<string | null>(null);
+  // A custom command's prompt is arbitrary text, so it can name another custom
+  // command. Without a bound, `/a` → prompt "/b" → `/b` → prompt "/a" would loop
+  // forever hammering the backend. Chains are capped rather than blocked: a
+  // prompt that legitimately resolves to a second command still resolves.
+  const MAX_COMMAND_CHAIN = 4;
 
   /* ---------------- chat ---------------- */
   const requestComposerFocus = useCallback(() => {
@@ -225,7 +250,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setView("home");
   }, []);
 
-  const send = useCallback(async (text: string, attachments: unknown[] = []) => {
+  const send = useCallback(async (text: string, attachments: unknown[] = [],
+                             chainDepth = 0) => {
     const clean = text.trim();
     if (!clean && attachments.length === 0) return;
     if (!online) { toast("Backend offline — running in local mode", "warn"); }
@@ -238,6 +264,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setSending(true);
     setOrb("thinking");
     let acc = "";
+    let aborted = false;
     const patch = (p: Partial<ChatMsg>) => setMsgs((ms) => ms.map((m) => (m.id === aid ? { ...m, ...p } : m)));
     const controller = new AbortController();
     chatAbortRef.current = controller;
@@ -265,24 +292,57 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         onMission: (mv) => setMsgs((ms) => ms.map((m) => m.id === aid
           ? { ...m, missions: [...(m.missions || []).filter((x) => x.id !== mv.id), mv] } : m)),
         onSlash: (r) => {
-          // A command replaced the turn: navigate if it names a view, else show
-          // its output verbatim. `ok: false` is a real answer (a usage error),
-          // so it still goes in the transcript rather than looking like silence.
-          if (r.view) { setView(r.view as View); patch({ text: `→ ${r.command}` }); }
+          // A view the shell cannot render must degrade to visible text, never a
+          // blank main pane: `App.tsx` is a `view === x` chain with no default
+          // branch, so `setView("analytic")` renders nothing at all. `save_custom`
+          // rejects unknown views server-side, so this only catches rows saved
+          // before that guard existed.
+          const target = (r.view && VIEWS.includes(r.view as View)) ? r.view : null;
+          // FR-CMD-004: a custom command is a *prompt*, not an answer. The spec
+          // says executing one "returns its prompt so the client sends it as a
+          // normal message". Rendering `r.text` as AURA's reply made the
+          // transcript show the assistant repeating the user's own prompt back
+          // at them; `/brief` typed as "summarise my day" appeared as if AURA
+          // had said it. So: send it, never render it.
+          //
+          // Ordering is deliberate — navigate *first*, then send. Navigation is
+          // instant local state, so the turn lands in the destination view. The
+          // send is deferred to `finally` (below) rather than fired here, because
+          // this stream has not ended yet.
+          const prompt = (r.result as { prompt?: string } | null)?.prompt;
+          if (typeof prompt === "string" && prompt.trim() && chainDepth < MAX_COMMAND_CHAIN) {
+            if (target) setView(target as View);
+            patch({ text: `→ ${r.command}` });
+            pendingPromptRef.current = prompt;
+            refresh();
+            return;
+          }
+          // Navigation is a view switch; anything else is rendered verbatim.
+          // `ok: false` is a real answer (a usage error), so it still goes in
+          // the transcript rather than looking like silence.
+          if (target) { setView(target as View); patch({ text: `→ ${r.command}` }); }
           else patch({ role: r.ok ? "assistant" : "error", text: r.text || "(no output)" });
           refresh();
         },
         onDone: () => { setSending(false); setOrb("success"); refresh(); },
       }, attachments, controller.signal);
     } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") return;
+      if (e instanceof Error && e.name === "AbortError") { aborted = true; return; }
       patch({ role: "error", text: `I couldn't reach the AURA backend. ${String(e).slice(0, 120)}` });
       setSending(false);
       setOrb("error");
     } finally {
       chatAbortRef.current = null;
+      // Deferred custom-command prompt, sent as an ordinary turn now that this
+      // stream is done and `chatAbortRef` belongs to nobody. Skipped on abort:
+      // the user hit Stop, so firing another message at them is the opposite of
+      // what they asked.
+      const follow = aborted ? null : pendingPromptRef.current;
+      pendingPromptRef.current = null;
+      if (follow) void sendRef.current?.(follow, [], chainDepth + 1);
     }
   }, [online, sessionId, refresh, setOrb, toast]);
+  useEffect(() => { sendRef.current = send; }, [send]);
 
   const newChat = useCallback(() => {
     setMsgs([]);

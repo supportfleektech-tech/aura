@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { LangProvider } from "../i18n";
-import { useStore, StoreProvider } from "../store";
+import { useStore, StoreProvider, VIEWS } from "../store";
 import { CommandsView } from "../views2/commands";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -104,7 +104,22 @@ describe("CommandsView", () => {
     await waitFor(() => expect(seen.some((t) => (t as { text: string }).text.includes("saved"))).toBe(true));
   });
 
-  it("a rejected name surfaces the server error instead of pretending it saved", async () => {
+  it("offers only real views as a jump target — FR-CMD-004", () => {
+    stubApi();
+    renderView();
+    const input = screen.getByLabelText("Jump to view") as HTMLInputElement;
+    const offered = Array.from(
+      (document.getElementById("slash-view-targets") as HTMLDataListElement).options)
+      .map((o) => o.value);
+    // Derived from `store.VIEWS`, the same array the `View` type comes from, so
+    // it cannot go stale. The backend rejects anything else with a 400; this
+    // makes the typo impossible rather than merely reported.
+    expect(offered).toEqual([...VIEWS]);
+    expect(offered).toContain("analytics");
+    expect(input.getAttribute("list")).toBe("slash-view-targets");
+  });
+
+it("a rejected name surfaces the server error instead of pretending it saved", async () => {
     stubApi({ customStatus: 400 });
     renderView();
     await waitFor(() => expect(screen.getByText("/health")).toBeTruthy());

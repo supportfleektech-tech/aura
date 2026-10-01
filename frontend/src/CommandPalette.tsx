@@ -12,6 +12,11 @@ export function SlashPalette({ catalog, query, onClose, onPick }: {
   const [q, setQ] = useState(query);
   const [sel, setSel] = useState(0);
   const results = useMemo(() => matchCommands(catalog, q), [catalog, q]);
+  // Sync the incoming query. Without this the prop is write-only after mount:
+  // `fireEvent.change` in a test delivers the whole string in one event, so the
+  // palette looked fine, but a real browser delivers "/" first and then "h" one
+  // keystroke at a time — and the local state never saw any of them.
+  useEffect(() => { setQ(query); }, [query]);
 
   useEffect(() => setSel(0), [q]);
   // Clamp only when the *catalog* changes. `results` is derived from

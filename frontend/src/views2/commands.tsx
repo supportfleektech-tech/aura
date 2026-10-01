@@ -1,7 +1,7 @@
 /* Slash command cheat sheet + custom-command CRUD (spec §3, FR-CMD-004/005). */
 import { useState } from "react";
 import { api, SlashCommandT } from "../api";
-import { useStore } from "../store";
+import { useStore, VIEWS } from "../store";
 import { Field, useFetch } from "../views1";
 import { Btn, Empty, Icon, Panel, Pill, Row } from "../ui";
 
@@ -71,12 +71,18 @@ export function CommandsView() {
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="What should /brief ask AURA to do?" />
         <Field aria-label="Jump to view" value={target} onChange={(e) => setTarget(e.target.value)}
-          placeholder="Optional: jump to a view (e.g. analytics)" />
+          list="slash-view-targets" placeholder="Optional: jump to a view" />
+        {/* Free text is validated against the real union server-side (400), but
+            offering the valid names keeps a typo from being possible at all.
+            The list is `store.VIEWS`, the same source the `View` type derives
+            from, so it cannot go stale. */}
+        <datalist id="slash-view-targets">{VIEWS.map((v) => <option key={v} value={v} />)}</datalist>
         <div style={{ display: "flex", gap: 8 }}>
           <Btn small kind="green" onClick={save}>Save command</Btn>
         </div>
         <small className="dim">
           Custom names must start with /, contain no spaces, and cannot shadow a built-in.
+          A jump target must be one of: {VIEWS.join(", ")}.
         </small>
       </Panel>
     </div>

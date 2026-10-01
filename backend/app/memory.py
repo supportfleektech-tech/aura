@@ -98,6 +98,39 @@ def _fts_query(text: str) -> str:
     return " OR ".join(toks) if toks else ""
 
 
+# Admission criterion for the *destructive* topic-delete path.
+#
+# It is deliberately FTS-membership-only, and the semantic half of the usual
+# `lex > 0 or sem >= T` rule is deliberately absent. Two measurements:
+#
+#   * `search()` derives its lexical score as `-bm25/8 + 0.35`. SQLite's bm25
+#     here returns -1e-06 for a term in most of the corpus, so every genuine
+#     weak FTS hit measures *exactly* 0.350. A `lex >= 0.35` predicate sits on
+#     its own floor with zero margin: one point of drift in bm25, in the /8, or
+#     in the constant flips every weak hit to a non-deletion. "The row came back
+#     from MATCH" cannot drift.
+#
+#   * The hashed fallback embedder is a bag of token-hash buckets and has no
+#     usable notion of "close". Genuine semantic-only pairs (topic vs a memory
+#     about it sharing no literal token) measured cos 0.000-0.078, while
+#     *unrelated* pairs reached 0.243 and short colliding memories reached 0.67
+#     ("Pharmacy is broken" vs "vimlish tarb"). The two populations overlap, so
+#     no threshold separates them: a semantic branch here buys false deletions
+#     and rescues no true ones.
+#
+# The cost is that a row about the topic which uses entirely different words is
+# not offered as a candidate. For a destructive command that is the right way
+# round — the caller lists candidates and the user confirms, so re-asking with
+# better words is cheap, while deleting an unrelated memory is not.
+def _is_topic_match(fts_hit: bool) -> bool:
+    """Did this row match one of the topic's tokens literally?
+
+    Membership, not a magnitude. See the comment above for the two
+    measurements that rule out a threshold here.
+    """
+    return bool(fts_hit)
+
+
 class MemoryEngine:
     # ---------- write pipeline ----------
     def extract_candidates(self, text: str, domain: str, source: str) -> list[dict]:
@@ -243,12 +276,11 @@ class MemoryEngine:
             lex = fts_hits.get(m["id"], 0.0)
             score = 0.45 * sem + 0.35 * lex + 0.10 * float(m.get("importance") or 0) + 0.10 * float(m.get("confidence") or 0)
             # `match` is the *topical* signal only: how strongly the text itself
-            # matched. `score` cannot serve that purpose — its importance and
-            # confidence terms put a ~0.12 floor under every row, so gating a
-            # delete on `score`/`relevance` matches the entire database. FTS
-            # hits always carry lex >= 0.35, and unrelated hashed-embedding
-            # cosine stays well under that, so 0.35 means "mentioned the words
-            # or is genuinely close".
+            # matched, with no importance/confidence terms. `score` is the wrong
+            # axis for "which rows are about this topic" — its importance and
+            # confidence terms put a ~0.12 floor under every row and dominate
+            # the ranking. It is reported for the UI; `forget_candidates` does
+            # not go through `search` at all (see there for why).
             m["_match"] = max(lex, sem)
             if score > 0.05:
                 scored.append((score, m))
@@ -304,22 +336,64 @@ class MemoryEngine:
                   f"memories#{mid} {(_before or {}).get('title', '')[:60]}")
         db.log_activity("memory", f"Memory deleted (#{mid})", "", "general")
 
+    def forget_candidates(self, topic: str) -> list[dict]:
+        """Every live memory that is *about* `topic`. Read-only — deletes nothing.
+
+        Deliberately not built on `search()`. Two reasons, both measured:
+
+        1. `search` ranks by `score`, which is ~91% importance/confidence. That
+           is the wrong axis for "which rows are about this topic" — a passing
+           mention scores as high as the real thing.
+        2. `search` windows its result (FTS LIMIT 30, then `LIMIT limit`), so a
+           large corpus silently hides the genuinely on-topic row. Measured on
+           the real engine with 61 memories: `/forget meeting` deleted 38
+           incidental mentions and kept the one actually *about* the meeting,
+           because that row fell outside the 50-row window.
+
+        So this asks the question directly, with no ranking and no window: did
+        FTS match one of the topic's tokens at all? `_fts_query` OR-joins
+        tokens, which is why the *caller* must confirm before deleting — see
+        `_mem_forget`.
+        """
+        toks = [t for t in _tokens(topic)][:12]
+        if not toks:
+            return []
+        fts_ids: set[int] = set()
+        try:
+            # Double-quote each token: `_tokens` admits apostrophes and digits,
+            # and an unquoted FTS5 token is syntax, not a word.
+            fq = " OR ".join('"' + t.replace('"', '""') + '"' for t in toks)
+            for r in db.q(
+                "SELECT m.id, m.title FROM memories_fts f "
+                "JOIN memories m ON m.id=f.rowid WHERE memories_fts MATCH ? "
+                "AND m.deleted_at IS NULL", (fq,)):
+                fts_ids.add(r["id"])
+        except Exception:
+            return []  # no FTS table: nothing is a candidate, which is the safe side
+        if not fts_ids:
+            return []
+        out: list[dict] = []
+        for r in db.q("SELECT id, title FROM memories WHERE deleted_at IS NULL"):
+            if not _is_topic_match(r["id"] in fts_ids):
+                continue
+            out.append({"id": r["id"], "title": str(r.get("title") or "")[:120],
+                        "why": "words"})
+        return out
+
     def forget_topic(self, topic: str) -> int:
         """Soft-delete every memory that is actually about `topic`.
 
-        Gate on `match` (the topical signal), never on `relevance`. Gating on
-        `relevance >= 0.12` soft-deleted the *whole database* for any query,
-        because `relevance` carries a ~0.12 floor from its importance and
-        confidence terms — `/forget anything` was a mass delete.
+        Kept as the deleting entry point because `POST /api/memories/forget`
+        returns `{"forgotten": <int>}`; that response shape is a contract.
+        Selection itself lives in `forget_candidates`, which gates on the
+        *topical* signal and never on `relevance`/`score`.
         """
-        hits = self.search(topic, limit=50)
-        n = 0
+        hits = self.forget_candidates(topic)
         for h in hits:
-            if float(h.get("match") or 0.0) >= 0.35:
-                self.delete(h["id"])
-                n += 1
-        db.log_activity("memory", f"Forgot topic: {topic}", f"{n} memories removed", "general", "warn")
-        return n
+            self.delete(h["id"])
+        db.log_activity("memory", f"Forgot topic: {topic}",
+                        f"{len(hits)} memories removed", "general", "warn")
+        return len(hits)
 
     def stats(self) -> dict:
         r = db.qone("SELECT COUNT(*) c FROM memories WHERE deleted_at IS NULL")

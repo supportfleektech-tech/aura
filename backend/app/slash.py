@@ -72,9 +72,37 @@ def _mem_store(args: str) -> dict:
 
 
 def _mem_forget(args: str) -> dict:
-    _need(args, "/forget <topic>")
+    """Two-step delete: list the candidates, delete only on an explicit confirm.
+
+    `_fts_query` OR-joins up to 12 tokens, so `/forget meeting` is *every*
+    memory containing "meeting" — which is the correct answer to the question
+    the user asked, and the wrong thing to do to their memory store on one
+    keystroke. So a bare `/forget <topic>` reports and changes nothing, and the
+    destructive half needs the literal word `confirm`:
+
+        /forget meeting             -> 12 candidates, nothing deleted
+        /forget meeting confirm     -> deletes exactly those 12
+
+    Two-step rather than an interactive prompt so it behaves identically from
+    chat and from the palette, where there is no shared modal to own.
+    """
+    _need(args, "/forget <topic> [confirm]")
     from .memory import memory_engine
-    return {"forgotten": memory_engine.forget_topic(args)}
+    topic, _, tail = (args or "").strip().rpartition(" ")
+    # Only a *trailing* `confirm` with something left over counts, so a topic
+    # that happens to be the word "confirm" is still forgetable.
+    if tail.strip().lower() == "confirm" and topic.strip():
+        topic = topic.strip()
+        # Capture the titles *before* the delete: after it, the rows are
+        # soft-deleted and a second candidate query would return nothing, so the
+        # user would be told how many went without being shown what.
+        cands = memory_engine.forget_candidates(topic)
+        n = memory_engine.forget_topic(topic)
+        return {"forgotten": n, "titles": [c["title"] for c in cands], "confirmed": True}
+    topic = (args or "").strip()
+    cands = memory_engine.forget_candidates(topic)
+    return {"forgotten": 0, "candidates": cands, "count": len(cands),
+            "confirmed": False, "confirm_with": f"/forget {topic} confirm"}
 
 
 def _mem_search(args: str) -> dict:
@@ -210,7 +238,8 @@ for _n, _v in (("/home", "home"), ("/career", "career"), ("/clients", "clients")
     _cmd(_n, "Navigation", f"Open {_v}", _n, "", _nav(_v))
 
 _cmd("/remember", "Memory", "Store a fact", "/remember standup is at 9am", "text", _mem_store)
-_cmd("/forget", "Memory", "Delete everything about a topic", "/forget old address", "text", _mem_forget)
+_cmd("/forget", "Memory", "Delete everything about a topic (needs: confirm)",
+     "/forget old address confirm", "topic [+ confirm]", _mem_forget)
 _cmd("/search", "Memory", "Hybrid search your memory", "/search invoice Zebra", "text", _mem_search)
 _cmd("/memories", "Memory", "Counts and recent memories", "/memories", "", _mem_list)
 _cmd("/task", "Tasks", "Create a task", "/task Review the PR", "text", _tasks_create)
@@ -255,6 +284,22 @@ def custom() -> list[dict]:
     return [dict(c) for c in _custom()]
 
 
+# The frontend `View` union, mirrored from frontend/src/store.tsx. An
+# unvalidated `view` here is not a cosmetic problem: App.tsx renders views with a
+# `view === x` chain and no default branch, so one typo produced a blank main
+# pane with no error anywhere. This mirrors the automation `entity_id` invariant
+# (hermes.validate_action) — validate against a known set before persisting.
+#
+# A hardcoded list in Python will drift, so `test_slash.py` parses the union out
+# of frontend/src/store.tsx and asserts the two sets are identical. That test is
+# the sync mechanism, not a comment.
+VIEWS = frozenset({
+    "home", "career", "clients", "personal", "inbox", "calendar", "memory",
+    "sessions", "voice", "gateway", "automations", "board", "activity",
+    "analytics", "smarthome", "files", "models", "terminal", "feeds", "settings",
+})
+
+
 def save_custom(name: str, prompt: str, view: str = "") -> dict:
     name = (name or "").strip()
     if not name.startswith("/"):
@@ -265,8 +310,11 @@ def save_custom(name: str, prompt: str, view: str = "") -> dict:
         raise ValueError(f"{name} is a built-in command")
     if not (prompt or "").strip():
         raise ValueError("custom command needs a prompt")
+    view = (view or "").strip()
+    if view and view not in VIEWS:
+        raise ValueError(f"{view!r} is not a view — pick one of: {', '.join(sorted(VIEWS))}")
     rows = [c for c in _custom() if c.get("name") != name]
-    row = {"name": name, "prompt": prompt.strip(), "view": (view or "").strip()}
+    row = {"name": name, "prompt": prompt.strip(), "view": view}
     rows.append(row)
     prefs.set_many({CUSTOM_KEY: json.dumps(rows)})
     return row
@@ -293,8 +341,12 @@ def parse(text: str) -> tuple[dict | None, str]:
     t = (text or "").strip()
     if not t.startswith("/"):
         return None, ""
-    head, _, rest = t.partition(" ")
-    args = rest.strip()
+    # Split on any whitespace, not just " ": `/task\tBuy milk` used to miss the
+    # space entirely, so `head` was "/task\tBuy" (no such command), `parse`
+    # returned None, and the whole line fell through to the model as prose.
+    parts = t.split(None, 1)
+    head = parts[0]
+    args = parts[1].strip() if len(parts) > 1 else ""
     if len(args) >= 2 and args[0] == args[-1] and args[0] in "\"'":
         args = args[1:-1]
     cmd = _BY_NAME.get(head)

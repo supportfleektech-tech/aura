@@ -10,6 +10,7 @@ const CAT: SlashCommand[] = [
   { name: "/task", category: "Tasks", summary: "Create a task", example: "/task Review the PR", arg: "text" },
   { name: "/tasks", category: "Tasks", summary: "List inbox tasks", example: "/tasks", arg: "" },
   { name: "/remember", category: "Memory", summary: "Store a fact", example: "/remember x", arg: "text" },
+  { name: "/health", category: "System", summary: "Health plus database size", example: "/health", arg: "" },
 ];
 
 describe("SlashPalette", () => {
@@ -84,7 +85,7 @@ describe("SlashPalette", () => {
     expect(items[0].getAttribute("aria-selected")).toBe("false");
   });
 
-  it("a shrinking list clamps the selection instead of dangling", () => {
+it("a shrinking list clamps the selection instead of dangling", () => {
     const picks: string[] = [];
     render(<SlashPalette catalog={CAT} query="" onClose={() => {}} onPick={(c) => picks.push(c.name)} />);
     const input = screen.getByRole("combobox");
@@ -93,5 +94,36 @@ describe("SlashPalette", () => {
     fireEvent.change(input, { target: { value: "/task" } }); // one exact match
     fireEvent.keyDown(input, { key: "Enter" });
     expect(picks).toEqual(["/task"]);
+  });
+
+  // `fireEvent.change` delivers the whole string in one event, so every test
+  // above passed even while `query` was write-only after mount. A real browser
+  // delivers "/" and then "h" one keystroke at a time, so the palette mounted
+  // unfiltered and never narrowed. These mount and then re-render with a
+  // changed prop, which is what the Composer actually does.
+  it("follows the query prop as it arrives one keystroke at a time", () => {
+    const { rerender } = render(
+      <SlashPalette catalog={CAT} query="/" onClose={() => {}} onPick={() => {}} />);
+    // Mounted on a bare slash: a browse, not a search.
+    expect(screen.getAllByRole("option")).toHaveLength(4);
+
+    rerender(<SlashPalette catalog={CAT} query="/h" onClose={() => {}} onPick={() => {}} />);
+    rerender(<SlashPalette catalog={CAT} query="/he" onClose={() => {}} onPick={() => {}} />);
+    rerender(<SlashPalette catalog={CAT} query="/hea" onClose={() => {}} onPick={() => {}} />);
+    expect(screen.queryByText("/task")).toBeNull();
+
+    rerender(<SlashPalette catalog={CAT} query="/health" onClose={() => {}} onPick={() => {}} />);
+    expect(screen.getByText("/health")).toBeTruthy();
+    expect(screen.queryByText("/tasks")).toBeNull();
+  });
+
+  it("Enter picks the row the incoming prop narrowed to, not a stale row", () => {
+    const picks: string[] = [];
+    const { rerender } = render(
+      <SlashPalette catalog={CAT} query="" onClose={() => {}} onPick={(c) => picks.push(c.name)} />);
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" }); // sel = 1
+    rerender(<SlashPalette catalog={CAT} query="/remem" onClose={() => {}} onPick={(c) => picks.push(c.name)} />);
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+    expect(picks).toEqual(["/remember"]);
   });
 });
