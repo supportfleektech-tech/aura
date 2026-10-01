@@ -105,6 +105,8 @@ export interface ChatEvents {
   onError?: (e: string) => void;
   onDone?: (d: { session_id: string }) => void;
   onThinking?: (t: { text: string }) => void;
+  /** A leading-slash command was executed server-side instead of the orchestrator. */
+  onSlash?: (r: SlashResult) => void;
 }
 
 export async function chatStream(message: string, session_id: string | null, ev: ChatEvents, attachments: unknown[] = [], signal?: AbortSignal) {
@@ -150,6 +152,7 @@ export async function chatStream(message: string, session_id: string | null, ev:
           else if (curEvent === "vision") ev.onVision?.(d);
           else if (curEvent === "mission") ev.onMission?.(d);
           else if (curEvent === "done") ev.onDone?.(d);
+          else if (curEvent === "slash") ev.onSlash?.(d as SlashResult);
         } catch { /* keep-alive */ }
       }
     }
@@ -160,8 +163,22 @@ export async function chatStream(message: string, session_id: string | null, ev:
   }
 }
 
+/* ---------------- slash commands (spec §3, FR-CMD-004/005) ------------- */
+export type SlashCommandT = { name: string; category: string; summary: string; example: string; arg: string };
+export type SlashResult = {
+  handled: boolean; ok: boolean; command: string;
+  result: unknown; text: string; view: string | null;
+};
+
 /* ---------------- api surface ---------------- */
 export const api = {
+  slash: {
+    catalog: () => get<{ commands: SlashCommandT[] }>("/slash"),
+    execute: (text: string) => post<SlashResult>("/slash/execute", { text }),
+    saveCustom: (name: string, prompt: string, view = "") =>
+      post<{ name: string }>("/slash/custom", { name, prompt, view }),
+    deleteCustom: (name: string) => del<{ ok: boolean }>(`/slash/custom/${encodeURIComponent(name)}`),
+  },
   me: {
     get: () => get<{ name: string; role: string; location: string; version: string }>("/me"),
     update: (b: Record<string, string>) => patch<{ name: string; role: string; location: string; version: string }>("/me", b),

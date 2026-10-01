@@ -264,6 +264,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           ? { ...m, vision: [...(m.vision || []).filter((x) => x.file !== v.file), v] } : m)),
         onMission: (mv) => setMsgs((ms) => ms.map((m) => m.id === aid
           ? { ...m, missions: [...(m.missions || []).filter((x) => x.id !== mv.id), mv] } : m)),
+        onSlash: (r) => {
+          // A command replaced the turn: navigate if it names a view, else show
+          // its output verbatim. `ok: false` is a real answer (a usage error),
+          // so it still goes in the transcript rather than looking like silence.
+          if (r.view) { setView(r.view as View); patch({ text: `→ ${r.command}` }); }
+          else patch({ role: r.ok ? "assistant" : "error", text: r.text || "(no output)" });
+          refresh();
+        },
         onDone: () => { setSending(false); setOrb("success"); refresh(); },
       }, attachments, controller.signal);
     } catch (e) {

@@ -242,6 +242,14 @@ class MemoryEngine:
                    if valid_embedding(evec) and len(evec) == len(qvec) and ename == qname else 0.0)
             lex = fts_hits.get(m["id"], 0.0)
             score = 0.45 * sem + 0.35 * lex + 0.10 * float(m.get("importance") or 0) + 0.10 * float(m.get("confidence") or 0)
+            # `match` is the *topical* signal only: how strongly the text itself
+            # matched. `score` cannot serve that purpose — its importance and
+            # confidence terms put a ~0.12 floor under every row, so gating a
+            # delete on `score`/`relevance` matches the entire database. FTS
+            # hits always carry lex >= 0.35, and unrelated hashed-embedding
+            # cosine stays well under that, so 0.35 means "mentioned the words
+            # or is genuinely close".
+            m["_match"] = max(lex, sem)
             if score > 0.05:
                 scored.append((score, m))
         scored.sort(key=lambda x: (-x[0], -x[1]["id"]))
@@ -249,7 +257,9 @@ class MemoryEngine:
         for s, m in scored[:limit]:
             d = dict(m)
             d.pop("embedding_json", None)
+            d.pop("_match", None)
             d["relevance"] = round(float(s), 3)
+            d["match"] = round(float(m.get("_match") or 0.0), 3)
             d["why_used"] = ("matched your words" if fts_hits.get(m["id"]) else "semantically related")
             out.append(d)
         db.log_activity("tool", f"Memory search: “{query[:50]}”",
@@ -295,10 +305,17 @@ class MemoryEngine:
         db.log_activity("memory", f"Memory deleted (#{mid})", "", "general")
 
     def forget_topic(self, topic: str) -> int:
+        """Soft-delete every memory that is actually about `topic`.
+
+        Gate on `match` (the topical signal), never on `relevance`. Gating on
+        `relevance >= 0.12` soft-deleted the *whole database* for any query,
+        because `relevance` carries a ~0.12 floor from its importance and
+        confidence terms — `/forget anything` was a mass delete.
+        """
         hits = self.search(topic, limit=50)
         n = 0
         for h in hits:
-            if h["relevance"] >= 0.12:
+            if float(h.get("match") or 0.0) >= 0.35:
                 self.delete(h["id"])
                 n += 1
         db.log_activity("memory", f"Forgot topic: {topic}", f"{n} memories removed", "general", "warn")

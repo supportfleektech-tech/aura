@@ -25,11 +25,12 @@ from .undo import undo_r
 from .costs import cost_r
 from .analytics import analytics_r
 from .home import home_r
+from .slash import slash_r
 
 # All routers in mount order — matches original domain.py ROUTERS list
 ROUTERS = [
     tasks_r, clients_r, projects_r, career_r, personal_r, memory_r, auto_r,
     activity_r, notes_r, approvals_r, gateway_r, push_r,
     brief_r, mail_r, cal_r, sync_r, pro_r, undo_r, cost_r, analytics_r,
-    missions_r, home_r, consol_r, board_r, worker_r,
+    missions_r, home_r, consol_r, board_r, worker_r, slash_r,
 ]

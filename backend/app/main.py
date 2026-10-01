@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import re
@@ -214,9 +215,51 @@ def chat_stream(body: ChatIn):
         raise HTTPException(413, f"message exceeds {config.MAX_MESSAGE_CHARS} chars")
     if len(body.attachments) > config.MAX_ATTACHMENTS:
         raise HTTPException(400, f"at most {config.MAX_ATTACHMENTS} attachments")
+    shortcut = _maybe_slash(body.message, body.attachments, body.session_id)
+    if shortcut is not None:
+        return shortcut
     gen = run_turn(body.message.strip(), body.session_id, body.domain, body.attachments)
     return StreamingResponse(
         gen,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _one_sse(event: str, data: dict) -> str:
+    """A single SSE frame. `default=str` so a handler result can never 500 here."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+def _maybe_slash(message: str, attachments: list, session_id: str | None) -> StreamingResponse | None:
+    """Short-circuit a leading-slash command before the orchestrator runs.
+
+    A command is deterministic: `/task Ship the plan` must create exactly one
+    task without spending a model call, so it must not go through `run_turn`.
+    Matching happens at position 0 only (see `slash.parse`), so prose that
+    merely contains a slash mid-sentence is untouched.
+
+    Attachments disqualify the shortcut — a `/`-prefixed message with an
+    attachment is a real turn, and dropping the attachment would lose the file.
+
+    A `done` frame closes the stream even though no turn ran: clients clear
+    their in-flight flag on `done`, and a slash reply that never sends one
+    leaves the composer stuck on "sending" forever.
+    """
+    if attachments:
+        return None
+    from . import slash as _slash
+    text = (message or "").strip()
+    try:
+        if _slash.parse(text)[0] is None:
+            return None
+        out = _slash.execute(text)
+    except Exception as e:  # noqa: BLE001 — a slash must never break the stream
+        out = {"handled": True, "ok": False, "command": text.split(" ", 1)[0],
+               "result": None, "text": f"{type(e).__name__}: {e}"[:200], "view": None}
+    frames = [_one_sse("slash", out), _one_sse("done", {"session_id": session_id or ""})]
+    return StreamingResponse(
+        iter(frames),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

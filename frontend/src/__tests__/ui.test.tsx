@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApprovalCard, Btn, ChatThread, CommandPalette, Composer, Empty, Panel, Pill, PlanSteps, Row, Seg, Sidebar, Toasts } from "../ui";
 import { useStore } from "../store";
@@ -32,6 +32,80 @@ describe("Composer focus request", () => {
     render(<Composer />);
     const ta = screen.getByLabelText("Message AURA");
     expect(document.activeElement).toBe(ta);
+  });
+});
+
+describe("Composer slash palette — FR-CMD-001", () => {
+  const CATALOG = { commands: [
+    { name: "/task", category: "Tasks", summary: "Create a task", example: "/task x", arg: "text" },
+    { name: "/health", category: "System", summary: "Health plus database size", example: "/health", arg: "" },
+  ] };
+
+  function stubCatalog() {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, status: 200, json: async () => CATALOG, text: async () => "",
+    } as unknown as Response)));
+  }
+
+  function composer() {
+    vi.mocked(useStore).mockReturnValue(base({
+      send: vi.fn(), listening: false, toggleListen: vi.fn(), transcript: "", newChat: vi.fn(), composerFocus: 0,
+    }));
+    render(<Composer />);
+    return screen.getByLabelText("Message AURA") as HTMLTextAreaElement;
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("opens on a leading slash and filters as you type", async () => {
+    stubCatalog();
+    const ta = composer();
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+    fireEvent.change(ta, { target: { value: "/heal" } });
+    expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("/health")).toBeTruthy());
+    expect(screen.queryByText("/task")).toBeNull();
+  });
+
+  it("does not open for a slash mid-sentence", async () => {
+    stubCatalog();
+    const ta = composer();
+    fireEvent.change(ta, { target: { value: "remind me to /task the PR" } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  });
+
+  it("closes when the leading slash is removed", async () => {
+    stubCatalog();
+    const ta = composer();
+    fireEvent.change(ta, { target: { value: "/heal" } });
+    await screen.findByRole("dialog", { name: "Command palette" });
+    fireEvent.change(ta, { target: { value: "hello" } });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  });
+
+  it("picking a command inserts it and leaves a trailing space when it takes an argument", async () => {
+    stubCatalog();
+    const ta = composer();
+    fireEvent.change(ta, { target: { value: "/" } });
+    await screen.findByRole("dialog", { name: "Command palette" });
+    await waitFor(() => expect(screen.getByText("/task")).toBeTruthy());
+    fireEvent.click(screen.getByText("/task"));
+    expect(ta.value).toBe("/task ");
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+    fireEvent.change(ta, { target: { value: "/" } });
+    await screen.findByRole("dialog", { name: "Command palette" });
+    await waitFor(() => expect(screen.getByText("/health")).toBeTruthy());
+    fireEvent.click(screen.getByText("/health"));
+    expect(ta.value).toBe("/health");
+  });
+
+  it("survives a failed catalog fetch by staying closed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const ta = composer();
+    fireEvent.change(ta, { target: { value: "/heal" } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
   });
 });
 

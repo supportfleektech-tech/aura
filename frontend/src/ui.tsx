@@ -1,6 +1,8 @@
 /* AURA OS UI kit — icons, atoms, shell chrome, chat, composer. */
 import React, { useEffect, useRef, useState } from "react";
 import { ago, api, ChatMsg, md } from "./api";
+import { SlashPalette } from "./CommandPalette";
+import { catalogFrom, SlashCommand } from "./slash";
 import { TKey, useLang } from "./i18n";
 import { useStore, View } from "./store";
 import { getServer } from "./prefs";
@@ -105,7 +107,7 @@ export const Empty = ({ icon = "spark", title, sub, action }: { icon?: string; t
   <div className="empty"><Icon n={icon} s={30} /><strong>{title}</strong>{sub && <span>{sub}</span>}{action}</div>
 );
 export const Skel = () => (<div className="skel"><div /><div /><div /></div>);
-export const Row = ({ icon, title, sub, right, onClick, c = "" }: { icon: string; title: string; sub?: string; right?: React.ReactNode; onClick?: () => void; c?: string }) => (
+export const Row = ({ icon, title, sub, right, onClick, c = "" }: { icon: string; title: React.ReactNode; sub?: string; right?: React.ReactNode; onClick?: () => void; c?: string }) => (
   <div className={`rowitem ${onClick ? "click" : ""} ${c}`} onClick={onClick}
     role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
     onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}>
@@ -649,6 +651,20 @@ export function Composer({ big = false }: { big?: boolean }) {
   const iref = useRef<HTMLInputElement>(null);
   const lastFocusReq = useRef(0);
   const emojiRef = useRef<HTMLDivElement>(null);
+  const cmdRef = useRef<HTMLDivElement>(null);
+  const [showCmds, setShowCmds] = useState(false);
+  const [cmdQuery, setCmdQuery] = useState("");
+  const [cmdCatalog, setCmdCatalog] = useState<SlashCommand[]>([]);
+  // Fetched on open, not on mount: the palette is dead weight until the user
+  // actually types a slash.
+  useEffect(() => {
+    if (!showCmds) return;
+    let live = true;
+    api.slash.catalog()
+      .then((r) => { if (live) setCmdCatalog(catalogFrom(r)); })
+      .catch(() => { if (live) setCmdCatalog([]); });
+    return () => { live = false; };
+  }, [showCmds]);
   useEffect(() => {
     if (composerFocus !== lastFocusReq.current) {
       lastFocusReq.current = composerFocus;
@@ -659,6 +675,12 @@ export function Composer({ big = false }: { big?: boolean }) {
     const handleClickOutside = (e: MouseEvent) => {
       if (emojiRef.current && !emojiRef.current.contains(e.target as Node)) {
         setShowEmoji(false);
+      }
+      // The palette floats above the composer, so its own backdrop click never
+      // fires — without this it stays open over the chat after the user clicks
+      // back into the message box.
+      if (cmdRef.current && !cmdRef.current.contains(e.target as Node)) {
+        setShowCmds(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -698,7 +720,13 @@ export function Composer({ big = false }: { big?: boolean }) {
         onChange={(e) => { setFiles([...files, ...Array.from(e.target.files || [])]); e.target.value = ""; }} />
       <textarea
         ref={ta} rows={big ? 3 : 2} value={listening ? (transcript || "Listening… speak now") : text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          const v = e.target.value;
+          setText(v);
+          // Position 0 only — a `/` mid-sentence is prose (FR-CMD-001).
+          if (v.startsWith("/")) { setCmdQuery(v); setShowCmds(true); }
+          else setShowCmds(false);
+        }}
         onKeyDown={(e) => {
           const ets = getServer("enter_to_send", true);
           if (e.key === "Enter" && (ets ? !e.shiftKey : (e.ctrlKey || e.metaKey))) { e.preventDefault(); submit(); }
@@ -721,6 +749,19 @@ export function Composer({ big = false }: { big?: boolean }) {
           <button className="sendbtn" onClick={submit} disabled={sending} title="Send"><Icon n="send" s={18} /></button>
         </div>
       </div>
+      {showCmds && cmdCatalog.length > 0 && (
+        <div ref={cmdRef}>
+          <SlashPalette catalog={cmdCatalog} query={cmdQuery}
+            onClose={() => setShowCmds(false)}
+            onPick={(c) => {
+              setShowCmds(false);
+              // Commands that take an argument get a trailing space so the user
+              // can keep typing instead of having to aim for the end of the line.
+              setText(c.arg ? `${c.name} ` : c.name);
+              ta.current?.focus();
+            }} />
+        </div>
+      )}
       {showEmoji && (
         <div ref={emojiRef} className="emoji-picker">
           <div className="emoji-search"><input type="text" placeholder="Search emojis…" onChange={(e) => { /* filter */ }} /></div>

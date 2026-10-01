@@ -86,6 +86,8 @@ SCHEMA: dict[str, tuple[Any, str, Any]] = {
     "chat_streaming": (True, "bool", None),
     "enter_to_send": (True, "bool", None),
     "chat_timestamps": (False, "bool", None),
+    # slash commands (spec §3, FR-CMD-004) — JSON list of {"name","prompt","view"}
+    "slash_custom": ("[]", "str", 8000),
     "chat_parallel_steps": (True, "bool", None),
     "approval_timeout": ("+30 seconds", "str", 50),
     # notifications

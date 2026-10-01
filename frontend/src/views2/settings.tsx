@@ -10,6 +10,7 @@ import { PersonalitySettings } from "../PersonalitySettings";
 import { playAlertSound } from "../alerts";
 import { Field } from "../views1";
 import { currentSubscription, pushSupported, subscribePush, unsubscribePush } from "../push";
+import { CommandsView } from "./commands";
 
 const FREE_PRESETS = [
   { id: "nvidia/nemotron-3-ultra-550b-a55b:free", name: "Nemotron 3 Ultra \u00b7 1M reasoning" },
@@ -447,6 +448,8 @@ export function SettingsView() {
           <small className="dim">Reset clears server overrides (env config still applies). Appearance lives in this browser only.</small>
         </Panel>
       </div>
+      {/* AC-CMD-003: every command with its category, description and example. */}
+      <CommandsView />
       <Panel icon="zap" title={`Hermes Tools (${tools?.tools.length || 0})`} sub={`Embedded runtime v${tools?.hermes || "2.0.0"} \u00b7 risk-gated`}>
         <div className="toolgrid">
           {(tools?.tools || []).map((t) => (
