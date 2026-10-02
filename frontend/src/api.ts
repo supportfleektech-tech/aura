@@ -1,6 +1,15 @@
 /* AURA OS API client — relative URLs (Vite proxies /api to the backend). */
 
-export const API = "/api";
+// Same-origin by default: in production the backend serves the built frontend,
+// and in dev Vite proxies /api to :8000 (see vite.config.ts — note that proxy
+// is dev-only and does not apply to a static host).
+//
+// VITE_API_BASE exists for the one case neither of those covers: the frontend
+// hosted somewhere else (a CDN, a preview) with the backend on its own host.
+// Set it to an absolute origin, e.g. https://aura.example.com — no trailing
+// slash, no /api suffix, which is appended here.
+const CONFIGURED = (import.meta.env.VITE_API_BASE as string | undefined)?.trim();
+export const API = CONFIGURED ? `${CONFIGURED.replace(/\/+$/, "")}/api` : "/api";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(API + path, {
