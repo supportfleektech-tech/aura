@@ -7,7 +7,7 @@ os.environ["AURA_DB_PATH"] = os.path.join(_tmp, "test.db")
 
 import unittest  # noqa: E402
 
-from app import db, domain, facts, memory, orchestrator  # noqa: E402
+from app import db, domain, facts, memory, orchestrator, prefs  # noqa: E402
 
 
 class FactsTest(unittest.TestCase):
@@ -290,6 +290,31 @@ class FactsTest(unittest.TestCase):
 
     def test_harvest_never_raises_on_junk(self):
         self.assertEqual(facts.harvest("clients.create", object()), [])
+
+
+    def test_harvest_respects_the_memory_auto_store_preference(self):
+        """Turning auto-store off must stop tool results writing memories too.
+
+        `memory_engine.observe` was gated on `memory_auto_store` and the fact
+        path was not, so a read-only `tasks.list` kept writing rows after the
+        user turned it off — enough churn to fail an agent eval. Pinned here
+        because a bypassed preference is invisible until someone notices.
+        """
+        data = {"client": {"id": 5, "name": "Sena Otieno", "email": "sena@otieno.example"}}
+        prefs.set_many({"memory_auto_store": False})
+        self.addCleanup(prefs.set_many, {"memory_auto_store": True})
+        before = (db.qone("SELECT COUNT(*) c FROM memories") or {}).get("c", 0)
+
+        events = orchestrator._harvest("clients.create", data, {}, [], {})
+        self.assertNotIn("facts", [n for n, _ in events],
+                         "a disabled preference must emit no facts event")
+
+        after = (db.qone("SELECT COUNT(*) c FROM memories") or {}).get("c", 0)
+        self.assertEqual(after, before, "memory_auto_store=False must not write memories")
+
+        prefs.set_many({"memory_auto_store": True})
+        events = orchestrator._harvest("clients.create", data, {}, [], {})
+        self.assertIn("facts", [n for n, _ in events], "re-enabled must work again")
 
 
 if __name__ == "__main__":

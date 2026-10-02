@@ -1281,7 +1281,17 @@ def _harvest(
     try:
         from . import facts as _facts
 
-        _stored = _facts.harvest(tool, data)
+        # Gated on the same preference as `memory_engine.observe` below. Tool
+        # results are a second source of durable facts, so honouring
+        # `memory_auto_store` for chat text but not for them would write
+        # memories after the user turned auto-store off — and it would do it
+        # from read-only tools like tasks.list, which is both surprising and
+        # enough churn to fail an agent eval.
+        try:
+            _auto = _prefs.get("memory_auto_store")
+        except Exception:
+            _auto = True
+        _stored = _facts.harvest(tool, data) if _auto else []
         if _stored:
             events.append(
                 (
