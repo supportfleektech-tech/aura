@@ -30,6 +30,19 @@ _STARTED = time.time()
 _probe_cache = TTLCache(max_entries=4, ttl_s=DEFAULT_TTL_S)
 
 
+def clear_probes() -> None:
+    """Drop the cached probe legs.
+
+    Called from `ollama_sync.invalidate_catalog`: `Local LFM` and `Model Room`
+    are two rows of one `/api/health` payload fed by two independent caches, so
+    a catalog rewrite that cleared only one of them could leave
+    `Local LFM: online` beside `Model Room: degraded` for a full TTL. Exposed as
+    a function so the other module does not reach into a private name that a
+    rename would silently reduce to a no-op.
+    """
+    _probe_cache.clear()
+
+
 def _probe_db() -> tuple[str, str, int]:
     t0 = time.time()
     try:

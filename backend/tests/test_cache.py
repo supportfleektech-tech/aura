@@ -4,6 +4,8 @@ The `CacheWiringTest` class below does import the app: a green cache unit test
 proves nothing if the two call sites quietly stopped using the cache.
 """
 import os
+import re
+import shutil
 import tempfile
 import time
 import unittest
@@ -401,6 +403,45 @@ class CacheWiringTest(unittest.TestCase):
         finally:
             db.run("DELETE FROM runs WHERE trace_id='cache-probe'")
             health._probe_cache.clear()
+
+
+    def test_scratch_sweep_reclaims_old_dirs_and_spares_young_ones(self):
+        """The suite leaks a scratch dir per module; the sweep is what bounds it.
+
+        Also pins the two-homes property: the sweep is registered in BOTH
+        tests/__init__.py (for `python -m unittest tests.test_x`) and
+        tests/test_env.py (for `discover -s tests`, which never imports the
+        package). Asserted on the prefix list rather than by invoking atexit,
+        which cannot be re-run inside a test.
+        """
+        import tempfile as _tf
+        import time as _t
+        from pathlib import Path
+
+        pkg = __import__("tests")
+        old = Path(_tf.gettempdir()) / "aura-cache-sweepcheck-old"
+        young = Path(_tf.gettempdir()) / "aura-cache-sweepcheck-young"
+        self.addCleanup(lambda: [shutil.rmtree(p, ignore_errors=True) for p in (old, young)])
+        for p in (old, young):
+            p.mkdir(parents=True, exist_ok=True)
+        old_mtime = _t.time() - (pkg._ABANDONED_AFTER_S + 3600)
+        os.utime(old, (old_mtime, old_mtime))
+
+        self.assertIn("aura-cache-", pkg._SCRATCH_PREFIXES)
+        self.assertIn("aura-slash-", pkg._SCRATCH_PREFIXES)
+        self.assertNotIn("aura-restore-", pkg._SCRATCH_PREFIXES,
+                         "app/backup.py uses that prefix for a live restore")
+
+        pkg._reclaim_scratch()
+        self.assertFalse(old.exists(), "an abandoned scratch dir must be reclaimed")
+        self.assertTrue(young.exists(), "a young dir may belong to a run still in flight")
+
+        # Every prefix the suite actually uses must be swept, or it leaks forever.
+        used = {m.group(1) for m in re.finditer(
+            r'mkdtemp\(prefix="(aura-[a-z-]+)"',
+            "".join(open(f).read() for f in Path("tests").glob("test_*.py")))}
+        unswept = {p for p in used if p not in pkg._SCRATCH_PREFIXES} - {"aura-restore-"}
+        self.assertEqual(unswept, set(), f"test scratch prefixes never swept: {unswept}")
 
 
 if __name__ == "__main__":

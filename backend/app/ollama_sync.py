@@ -142,9 +142,10 @@ def invalidate_catalog() -> None:
     try:
         from . import health
 
-        health._probe_cache.clear()
-    except Exception:
-        pass  # a cache-clearing helper must never be the thing that raises
+        health.clear_probes()
+    except Exception as e:  # a cache-clearing helper must never be the thing that raises
+        db.log_activity("tool", "Probe cache clear failed",
+                        f"{type(e).__name__}: {e}"[:140], "general", "warn")
 
 
 def live_list(timeout: float = 4.0, use_cache: bool = True) -> dict:

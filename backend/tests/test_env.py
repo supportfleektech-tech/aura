@@ -26,6 +26,10 @@ os.environ.setdefault("AURA_DISABLE_SCHEDULER", "1")
 # absent: app/backup.py uses the same prefix for an in-flight production
 # restore, so sweeping it could delete a real server's work dir mid-extraction.
 # That test's own dir is small enough to not be worth the risk.
+#
+# Keep this in step with the `mkdtemp` prefixes in backend/tests/*.py — a
+# missing entry is an unbounded leak that no amount of waiting will reclaim,
+# because the sweep only globs what is listed here.
 _SCRATCH_PREFIXES = (
     "aura-test-",
     "aura-watch-",
@@ -33,6 +37,8 @@ _SCRATCH_PREFIXES = (
     "aura-facts-",
     "aura-board-",
     "aura-workers-",
+    "aura-cache-",
+    "aura-slash-",
 )
 
 # Two overlapping suite runs share these prefixes, so a young directory may
