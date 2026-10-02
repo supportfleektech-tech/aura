@@ -57,6 +57,18 @@ class OnDemandLocalTest(unittest.TestCase):
         self.assertEqual(status, "degraded")
         self.assertIn("not started", note)
 
+    def test_dormant_health_still_reports_the_cloud_status(self):
+        """Dormancy must not cost the panel half its information.
+
+        The first cut returned early from the dormant branch without the cloud
+        half, so the Local-LFM row silently lost its cloud configuration —
+        caught by `e2e_check`, which asserts on exactly that string.
+        """
+        _, note, _ = health._probe_lfm()
+        self.assertIn("cloud:", note, "the dormant row must still name the cloud status")
+        prefs.set_many({"privacy": "local-first"})
+        self.assertIn("cloud:", health._probe_lfm()[1])
+
     def test_activate_probes_exactly_once(self):
         router.activate_local()
         self.assertEqual(len(self.calls), 1)

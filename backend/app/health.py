@@ -53,29 +53,42 @@ def _probe_db() -> tuple[str, str, int]:
         return "offline", str(e)[:100], -1
 
 
+def _cloud_status() -> str:
+    """The cloud half of the Local-LFM detail line, shared by both paths.
+
+    Extracted because the dormant path must report cloud the same way the live
+    path does. Returning early from the dormant branch without it silently
+    dropped the cloud configuration from the health panel — and `e2e_check`
+    asserts on it.
+    """
+    from .inference import router
+
+    cloud = router.probe()["cloud"]
+    if cloud["configured"]:
+        return f"ready ({cloud['provider']}/{cloud['model']} · {prefs.get('privacy')})"
+    return f"disabled (no key · provider {cloud['provider']})"
+
+
 def _probe_lfm() -> tuple[str, str, int]:
     from .inference import router
 
     _probe_cache.set_ttl(tuned_ttl())
+    if router._local_dormant():
+        # On-demand: report "not started" without opening a connection to a model
+        # server the user never booted — but still say what cloud is doing, or
+        # the panel loses half its information.
+        return ("degraded",
+                f"not started (on-demand) · cloud: {_cloud_status()}", 0)
     # Keyed on the base URL for the same reason `ollama_sync.live_list` is: a
     # Settings change of `ollama_base_url` must not keep serving the previous
-    # machine's verdict. This is the one other cache key in the module that was
-    # input-blind; `vector` reads no mutable setting, only a row count.
-    if router._local_dormant():
-        # On-demand: report "not started" without opening a connection to a
-        # model server the user never booted.
-        return "degraded", "dormant — not started (on-demand)", 0
+    # machine's verdict.
     key = f"ollama_healthy:{router.ollama.base}"
     leg = _probe_cache.get(key)
     if leg is None:
         leg = router.ollama.healthy()  # the network call — the expensive part
         _probe_cache.set(key, leg)
     ok, note = leg
-    cloud = router.probe()["cloud"]
-    if cloud["configured"]:
-        cs = f"ready ({cloud['provider']}/{cloud['model']} · {prefs.get('privacy')})"
-    else:
-        cs = f"disabled (no key · provider {cloud['provider']})"
+    cs = _cloud_status()
     if ok:
         return "online", f"ollama · {note or router.ollama.model} · cloud: {cs}", 0
     return "degraded", f"builtin engine active · ollama: {note[:60]} · cloud: {cs}", 0
