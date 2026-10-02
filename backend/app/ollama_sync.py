@@ -241,40 +241,80 @@ def list_models(refresh: bool = False) -> dict:
             "refreshed": bool(refresh)}
 
 
-def set_default(role: str, name: str) -> dict:
-    """Point chat/vision/embed at a synced model. Validates against the catalog."""
+def _select(key: str, role: str, name: str, known: set[str], unreachable: bool = False) -> dict:
+    """Apply a validated model choice, or explain why it is not available."""
+    if name not in known:
+        if not known and unreachable:
+            raise ValueError("cannot verify the model: Ollama is unreachable and no catalog is "
+                             "synced — start Ollama and sync first")
+        raise ValueError(f"{name} not in your local catalog ({', '.join(sorted(known)[:6])}"
+                         f"{'…' if len(known) > 6 else ''}) — I only point at models that exist")
+    prefs.set_many({key: name})
+    return {"ok": True, "role": role, "model": name}
+
+
+def set_default(role: str, name: str, refresh: bool = False) -> dict:
+    """Point chat/vision/embed at a synced model. Validates against the catalog.
+
+    Ollama's own answer is the authority whenever it gives one, and the DB
+    catalog is only the fallback. Probing only when the DB catalog was empty was
+    the old behaviour and it was wrong in both directions — a model dropped from
+    Ollama stayed acceptable for as long as the row survived in SQLite, and a
+    freshly pulled model was rejected until a sync ran.
+
+    The probe is read through `_catalog_cache` rather than taken fresh on every
+    call, because a settings mutation had no business paying up to 2.5s of
+    network on the happy path. The bound this accepts is the cache TTL —
+    `cache_ttl_s` (30s default) — and it is safe in one direction only:
+
+    * A *positive* cached verdict (the model is in the list) can only be stale
+      in the harmless direction. The model was present up to a TTL ago, so it
+      exists now or the caller is about to be refused on its very next use.
+    * A *negative* cached verdict is not safe: the cache may predate an
+      `ollama pull`, and a freshly pulled model would stay unselectable until
+      the entry expired. So a negative verdict is re-probed uncached before it
+      is allowed to refuse anything.
+
+    Net effect: acceptance costs no network round trip, and refusal always rests
+    on a probe that is seconds old at worst. `refresh=True` skips the cache
+    entirely and forces a fresh probe, for an explicit "check the machine now".
+
+    DELIBERATE TRADE, not a guarantee: when Ollama is unreachable and a catalog
+    *is* synced, the DB rows are accepted as-is. That answer can be as old as
+    the last successful sync — at least `ollama_sync_interval_min` (30 min by
+    default), and unbounded when auto-sync is off or syncs keep failing — so a
+    model removed while Ollama was down can still be pointed at. Refusing
+    instead would make the whole model room unusable during an outage, which is
+    a worse failure than a stale acceptance on a path that only ever runs
+    offline.
+    """
     key = {"chat": "ollama_chat_model", "vision": "ollama_vision_model",
            "embed": "ollama_embed_model"}.get(role)
     if not key:
         raise ValueError("role must be chat|vision|embed")
     if not name:
         raise ValueError("model name required")
-    known = {m["name"] for m in cached()}
-    # Uncached on purpose: this is a validation, and it must see the machine as it
-    # is *now*. Probing only when the DB catalog is empty was the old behaviour and
-    # it was wrong in both directions — a model dropped from Ollama stayed
-    # acceptable for as long as the row survived in SQLite, and a freshly pulled
-    # model was rejected until a sync ran. Whenever Ollama answers, its answer is
-    # the authority and the DB catalog is only the fallback.
-    live = _live_list_uncached(timeout=2.5)
-    if live.get("ok"):
-        known = {m["name"] for m in live["models"]}
-    elif not known:
-        raise ValueError("cannot verify the model: Ollama is unreachable and no catalog is "
-                         "synced — start Ollama and sync first")
-    # DELIBERATE TRADE, not a guarantee: when Ollama is unreachable and a catalog
-    # *is* synced, the DB rows are accepted as-is. That answer can be as old as
-    # the last successful sync — at least `ollama_sync_interval_min` (30 min by
-    # default), and unbounded when auto-sync is off or syncs keep failing — so a
-    # model removed while Ollama was down can still be pointed at. Refusing
-    # instead would make the whole model room unusable during an outage, which is
-    # a worse failure than a stale acceptance on a path that only ever runs
-    # offline.
+
+    # The synced DB catalog. Only ever a fallback for an answer Ollama declined
+    # to give, never a substitute for one it gave.
+    db_names = {m["name"] for m in cached()}
+
+    probe = live_list(timeout=2.5, use_cache=not refresh)
+    if not probe.get("ok"):
+        return _select(key, role, name, db_names, unreachable=True)
+
+    known = {m["name"] for m in probe["models"]}
     if name not in known:
-        raise ValueError(f"{name} not in your local catalog ({', '.join(sorted(known)[:6])}"
-                         f"{'…' if len(known) > 6 else ''}) — I only point at models that exist")
-    prefs.set_many({key: name})
-    return {"ok": True, "role": role, "model": name}
+        # Negative verdict: confirm it uncached before refusing, so a model pulled
+        # after this entry was cached is still selectable.
+        fresh = _live_list_uncached(timeout=2.5)
+        if fresh.get("ok"):
+            known = {m["name"] for m in fresh["models"]}
+        else:
+            # Ollama went away between the two reads, so there is no authority left
+            # and the synced catalog is all there is.
+            return _select(key, role, name, db_names, unreachable=True)
+    return _select(key, role, name, known)
 
 
 def status() -> dict:

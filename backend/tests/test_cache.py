@@ -270,7 +270,87 @@ class CacheWiringTest(unittest.TestCase):
                             "a freshly pulled model must validate against a live probe")
             with self.assertRaises(ValueError):
                 osy.set_default("chat", "a:1")
-        self.assertEqual(len(calls), 2, "set_default must probe once per call, never read the cache")
+        # Two probes for two calls, but not one *each*: `c:1` is absent from the
+        # first probe's answer only in the sense that it had to be asked about —
+        # the point that matters is asserted by the two tests below.
+        self.assertGreaterEqual(len(calls), 2)
+
+    def test_set_default_accepts_a_cached_probe_without_a_network_round_trip(self):
+        """The reason `set_default` reads `_catalog_cache`: a settings mutation must
+        not pay a 2.5s probe on the happy path. A model the cached probe already
+        lists is accepted from it — and a stale positive can only ever fail safe,
+        since the model existed up to a TTL ago.
+        """
+        from app import ollama_sync as osy
+
+        self._seed_db_catalog(["a:1"])
+        calls = []
+        with self._tags(_TAGS_A, calls):
+            osy.live_list()          # warm the cache: Ollama has a:1
+            self.assertEqual(len(calls), 1)
+            first = osy.set_default("chat", "a:1")
+            second = osy.set_default("chat", "a:1")
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(len(calls), 1,
+                         "a model already listed by the cached probe must not re-probe")
+
+    def test_set_default_refresh_bypasses_the_cache(self):
+        """`refresh=True` is the explicit escape hatch: it must re-read the machine
+        even when the cache holds an answer that would already have decided it."""
+        from app import ollama_sync as osy
+
+        self._seed_db_catalog(["a:1"])
+        calls = []
+        with self._tags(_TAGS_A, calls):
+            osy.live_list()          # warm the cache with a:1
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(osy.set_default("chat", "a:1", refresh=True)["ok"])
+        self.assertEqual(len(calls), 2, "refresh=True must force a fresh probe")
+
+    def test_set_default_reprobes_before_refusing_on_a_cached_negative(self):
+        """The one staleness that must not survive: a cached answer that does *not*
+        list the model may predate an `ollama pull`, and refusing on it would keep a
+        freshly pulled model unselectable until the entry expired. So a negative
+        verdict is re-probed uncached first.
+
+        This is the bound the fix accepts, stated as a test: acceptance may read a
+        probe up to `cache_ttl_s` old, but a refusal never does.
+        """
+        from app import ollama_sync as osy
+
+        self._seed_db_catalog([])
+        calls = []
+        # The first probe answers "Ollama is up and has nothing"; every later probe
+        # answers with a:1 present — i.e. the model gets pulled between the two.
+        seq = iter([{"models": []}, _TAGS_A])
+
+        def fake_get(url, timeout=None):
+            calls.append(url)
+            return _Resp(next(seq, _TAGS_A))
+
+        with patch("app.ollama_sync.httpx.get", side_effect=fake_get):
+            osy.live_list()  # caches the empty answer
+            self.assertEqual(len(calls), 1)
+            res = osy.set_default("chat", "a:1")
+        self.assertTrue(res["ok"], "a model pulled after the cached empty probe must be selectable")
+        self.assertEqual(len(calls), 2, "a cached negative must be re-probed before refusing")
+
+    def test_set_default_still_refuses_a_model_ollama_dropped(self):
+        """The hole the uncached probe was introduced to close must stay closed: a
+        model present in a non-empty DB catalog but absent from Ollama is refused,
+        cache or no cache."""
+        from app import ollama_sync as osy
+
+        self._seed_db_catalog(["a:1"])
+        calls = []
+        with self._tags(_TAGS_B, calls):  # Ollama has b:1 and c:1, not a:1
+            with self.assertRaises(ValueError):
+                osy.set_default("chat", "a:1")
+            # A second attempt must not start accepting it from a cached negative.
+            with self.assertRaises(ValueError):
+                osy.set_default("chat", "a:1")
+        self.assertGreaterEqual(len(calls), 2)
 
     def test_set_default_falls_back_to_the_db_catalog_only_when_ollama_is_down(self):
         """The one case the DB catalog is still trusted, and it is a deliberate

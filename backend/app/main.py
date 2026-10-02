@@ -1004,6 +1004,10 @@ def ollama_models():
 class OllamaDefault(BaseModel):
     role: str = "chat"
     model: str = ""
+    # `set_default` validates against the read-through probe cache, so a model pulled
+    # moments ago can be refused by a stale negative. `refresh: true` forces a live
+    # probe for an explicit "re-read the machine now".
+    refresh: bool = False
 
 
 @app.post("/api/ollama/default")
@@ -1011,7 +1015,7 @@ def ollama_set_default(b: OllamaDefault):
     from . import ollama_sync
 
     try:
-        return ollama_sync.set_default(b.role, b.model.strip())
+        return ollama_sync.set_default(b.role, b.model.strip(), refresh=b.refresh)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
