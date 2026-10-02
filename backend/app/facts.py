@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 from .memory import memory_engine
+from .hermes import RISK_INFO
 
 MAX_PER_RESULT = 3
 MIN_CONTENT_CHARS = 12
@@ -107,9 +108,31 @@ _PLURAL = (("clients", _client_fact),
            ("tasks", _task_fact))
 
 
+def _is_write_tool(tool: str) -> bool:
+    """True when the tool asserted something, rather than merely reporting it.
+
+    The risk taxonomy already draws this line: R0 is a pure read, R1+ is a
+    local write. A `tasks.list` result is not a new fact about the user — it is
+    a re-read of rows they already own in the tasks table, and turning it into a
+    durable memory duplicates data that then has to be kept in sync (the same
+    stale-row class as a changing project status). Worse, every stored memory
+    journals a write, so a read-only turn recorded user actions it never took:
+    `agent_cases.json`'s `read_tasks_without_mutation` asserts that
+    `write_journal` stays empty after "list my tasks, do not change them".
+
+    So: facts come from writes. `tasks.create` asserts a due date worth
+    remembering; `tasks.list` re-derives one the user can already see.
+    """
+    if tool.startswith("__"):  # orchestrator pseudo-tools are read-only context folds
+        return False
+    from .hermes import TOOLS
+    tool_obj = TOOLS.get(tool)
+    return bool(tool_obj) and tool_obj.risk != RISK_INFO
+
+
 def extract(tool: str, data: Any) -> list[dict]:
-    """Candidate facts from one tool result. At most MAX_PER_RESULT."""
-    if not isinstance(data, dict):
+    """Candidate facts from one write-tool result. At most MAX_PER_RESULT."""
+    if not isinstance(data, dict) or not _is_write_tool(tool):
         return []
     out: list[dict] = []
     row = _bare_row_fact(data)

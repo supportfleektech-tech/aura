@@ -62,7 +62,7 @@ class FactsTest(unittest.TestCase):
         data = {"clients": [{"name": f"C{i}", "email": f"c{i}@x.example"} for i in range(9)]}
         # Exactly 3, not "at most 3" — `<= 3` also passes if the plural
         # branch silently returned nothing, i.e. it cannot fail.
-        self.assertEqual(len(facts.extract("clients.list", data)), 3)
+        self.assertEqual(len(facts.extract("clients.create", data)), 3)
 
     # ---------- Finding 1: bare rows, the shape *.create actually returns ----------
 
@@ -110,7 +110,7 @@ class FactsTest(unittest.TestCase):
         """The wrapper branch must survive alongside the bare-row branch."""
         domain.create_client(domain.ClientIn(
             name="Listed Client", email="listed.client@zebra.example"))
-        out = facts.extract("clients.list", domain.list_clients())
+        out = facts.extract("clients.create", domain.list_clients())
         self.assertTrue(out, "wrapper payload yielded nothing")
         self.assertTrue(any("listed.client@zebra.example" in f["content"] for f in out), out)
 
@@ -155,9 +155,9 @@ class FactsTest(unittest.TestCase):
     # ---------- Finding 3: a project status change must not accumulate rows ----------
 
     def test_project_status_change_reconfirms_one_row(self):
-        active = facts.extract("projects.list", {"projects": [
+        active = facts.extract("projects.create", {"projects": [
             {"id": 91, "name": "Statusy", "status": "active"}]})
-        done = facts.extract("projects.list", {"projects": [
+        done = facts.extract("projects.create", {"projects": [
             {"id": 91, "name": "Statusy", "status": "done"}]})
         self.assertEqual(len(active), 1, active)
         self.assertEqual(len(done), 1, done)
@@ -170,11 +170,11 @@ class FactsTest(unittest.TestCase):
         self.assertEqual(active[0]["title"], done[0]["title"])
         self.assertNotIn("done", done[0]["title"])
 
-        first = facts.harvest("projects.list", {"projects": [
+        first = facts.harvest("projects.create", {"projects": [
             {"id": 91, "name": "Statusy", "status": "active"}]})
         self.assertEqual(len(first), 1, first)
         self.assertFalse(first[0].get("deduped"), first[0])
-        second = facts.harvest("projects.list", {"projects": [
+        second = facts.harvest("projects.create", {"projects": [
             {"id": 91, "name": "Statusy", "status": "done"}]})
         self.assertEqual(len(second), 1, second)
         self.assertTrue(second[0].get("deduped"), second)
@@ -192,7 +192,7 @@ class FactsTest(unittest.TestCase):
         `test_project_status_change_reconfirms_one_row` exercises.
         """
         for status in ("active", "done", "paused", "at_risk", None, "", "BLOCKED"):
-            out = facts.extract("projects.list", {"projects": [
+            out = facts.extract("projects.create", {"projects": [
                 {"id": 92, "name": "Titled", "status": status}]})
             self.assertEqual(len(out), 1, (status, out))
             self.assertEqual(out[0]["title"], "Project: Titled", (status, out[0]))
@@ -315,6 +315,51 @@ class FactsTest(unittest.TestCase):
         prefs.set_many({"memory_auto_store": True})
         events = orchestrator._harvest("clients.create", data, {}, [], {})
         self.assertIn("facts", [n for n, _ in events], "re-enabled must work again")
+
+
+    def test_only_write_tools_produce_facts(self):
+        """A read re-derives what the user already owns; a write asserts it.
+
+        `agent_cases.json`'s `read_tasks_without_mutation` asserts
+        `write_journal` stays empty after "list my tasks, do not change them".
+        Every stored memory journals a write via `undo.record`, so extracting
+        from an R0 tool made a read-only turn record actions the user never took
+        — and duplicated rows that then have to be kept in sync, the same
+        stale-data class as a changing project status.
+
+        The risk taxonomy already draws the line: R0 is a pure read.
+        """
+        row = {"id": 1, "title": "T-Facts due item", "due_at": "2026-10-01T09:00:00Z"}
+        self.assertEqual(len(facts.extract("tasks.create", {"task": row})), 1)
+        self.assertEqual(facts.extract("tasks.list", {"tasks": [row]}), [],
+                         "an R0 read must not produce a durable fact")
+        self.assertEqual(facts.extract("tasks.overdue", {"tasks": [row]}), [])
+
+        cli = {"id": 2, "name": "Amina Yusuf", "email": "amina@zebra.example"}
+        self.assertEqual(len(facts.extract("clients.create", {"client": cli})), 1)
+        self.assertEqual(facts.extract("clients.list", {"clients": [cli]}), [],
+                         "an R0 read must not produce a durable fact")
+
+        # Orchestrator pseudo-tools fold context; they assert nothing.
+        self.assertEqual(facts.extract("__load_missions__", {"missions": []}), [])
+        # An unregistered name must fail closed, not raise.
+        self.assertEqual(facts.extract("nope.not.a.tool", {"task": row}), [])
+
+    def test_a_read_only_turn_journals_nothing(self):
+        """End-to-end version: the property `agent_cases.json` asserts."""
+        db.run("DELETE FROM write_journal")
+        data = {"tasks": [{"id": 9, "title": "Eval overdue filing",
+                           "due_at": "2026-10-02T09:00:00Z"}]}
+        entities = {k: [] for k in ("tasks", "projects", "resumes", "expenses", "automations")}
+        events = orchestrator._harvest("tasks.list", data, {}, [], entities)
+        self.assertNotIn("facts", [n for n, _ in events])
+        n = (db.qone("SELECT COUNT(*) c FROM write_journal") or {}).get("c", 0)
+        self.assertEqual(n, 0, "a read-only turn must not journal a write")
+        # Control: the same payload through a WRITE tool does journal, so the
+        # assertion above is about the tool's intent and not an inert test.
+        orchestrator._harvest("tasks.create", {"task": data["tasks"][0]}, {}, [], entities)
+        after = (db.qone("SELECT COUNT(*) c FROM write_journal") or {}).get("c", 0)
+        self.assertGreater(after, 0, "a write tool must still journal — control")
 
 
 if __name__ == "__main__":

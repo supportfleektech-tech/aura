@@ -25,10 +25,11 @@ from . import db, prefs
 
 KIND_MISSION_TICK = "mission_tick"
 KIND_SCHEDULE_TICK = "schedule_tick"
+KIND_MISSION_CYCLE = "mission_cycle"
 KIND_CONSOLIDATION = "consolidation"
 # The vocabulary `_run` dispatches on. Declared here so the E2E check can assert
 # against the same list rather than hardcoding a second copy.
-KNOWN_KINDS = (KIND_MISSION_TICK, KIND_SCHEDULE_TICK, KIND_CONSOLIDATION)
+KNOWN_KINDS = (KIND_MISSION_TICK, KIND_SCHEDULE_TICK, KIND_MISSION_CYCLE, KIND_CONSOLIDATION)
 
 MAX_BACKOFF_S = 300
 BACKOFF_BASE_S = 5
@@ -125,6 +126,13 @@ def _run(job: dict) -> Any:
     if kind == KIND_CONSOLIDATION:
         from . import consolidate as _c
         return _c.run_pass()
+    if kind == KIND_MISSION_CYCLE:
+        from . import missions as _m
+        # Schedules before missions: a scheduled mission relaunches here and is
+        # then advanced in the same pass. One job rather than two, because
+        # `drain` runs a claimed batch concurrently and that ordering would not
+        # survive it.
+        return {"schedules": _m.tick_schedules(), "missions": _m.tick_missions()}
     raise ValueError(f"unknown job kind: {kind}")
 
 
@@ -136,7 +144,7 @@ def drain(limit: int = 20) -> dict:
     memory while only having N workers to run it. `limit=0` (or negative) means
     "one pool's worth" rather than "nothing".
     """
-    out = {"ran": 0, "done": 0, "retried": 0, "dead": 0}
+    out: dict[str, Any] = {"ran": 0, "done": 0, "retried": 0, "dead": 0, "results": {}}
     want = max(1, int(limit)) if limit else pool_size()
     jobs = claim(min(want, pool_size() * 4))
     if not jobs:
@@ -146,7 +154,9 @@ def drain(limit: int = 20) -> dict:
         for fut, job in futures.items():
             out["ran"] += 1
             try:
-                complete(job["id"], fut.result())
+                result = fut.result()
+                complete(job["id"], result)
+                out["results"][job["kind"]] = result
                 out["done"] += 1
             except Exception as e:  # noqa: BLE001 — one bad job must not stop the drain
                 if fail(job["id"], str(e)) == "retry":
@@ -201,20 +211,30 @@ def scheduler_pass() -> dict:
     passes, so a test cannot exercise the loop itself, only this function.
     """
     from . import hermes as _h
-    from . import missions as _m
-    out: dict[str, Any] = {"automations": _h.hermes.tick_automations(),
-                           "schedules": _m.tick_schedules(),
-                           "missions": _m.tick_missions()}
+    out: dict[str, Any] = {"automations": _h.hermes.tick_automations()}
     try:
         from . import consolidate as _c
         if _c.should_run():
-            # run_pass owns the `consolidate_last_run` watermark it sets on
-            # completion; writing it again here would be a second writer.
-            out["consolidation"] = _c.run_pass()
+            enqueue(KIND_CONSOLIDATION, {}, priority=2)
     except Exception as e:  # noqa: BLE001 — consolidation must not stall the loop
         out["consolidation_error"] = str(e)[:120]
+    # The mission cycle goes through the queue rather than being called inline,
+    # which is what makes the pool real: jobs persist, survive a restart, and
+    # retry with backoff. Calling `tick_schedules`/`tick_missions` directly here
+    # would leave `enqueue` with no production caller — a well-tested subsystem
+    # that never runs, which is the exact bug class this module was written to
+    # fix in the first place.
+    try:
+        enqueue(KIND_MISSION_CYCLE, {}, priority=1)
+    except Exception as e:  # noqa: BLE001
+        out["enqueue_error"] = str(e)[:120]
     try:
         out["jobs"] = drain()
+        # Unwrap the cycle result so `missions` stays the list of fired steps
+        # that callers (and the regression tests) have always read.
+        cycle = (out["jobs"].get("results") or {}).get(KIND_MISSION_CYCLE) or {}
+        out["missions"] = cycle.get("missions", [])
+        out["schedules"] = cycle.get("schedules", [])
     except Exception as e:  # noqa: BLE001
         out["jobs_error"] = str(e)[:120]
     return out

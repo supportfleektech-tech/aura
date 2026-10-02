@@ -84,11 +84,11 @@ npm run dev  # :5173, proxies /api to :8000 (start backend first)
 ## Test Quirks
 
 - **Run single test**: `AURA_DATA_DIR="$(mktemp -d)" OLLAMA_BASE_URL=http://127.0.0.1:1 ../venv/bin/python -m unittest tests.test_aura.AuraTest.test_task_create_echoes_title`
-- **Full backend suite must be fully green (498 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
+- **Full backend suite must be fully green (502 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
 - Frontend: 238/238 Vitest tests pass (jsdom; `api.test.ts` runs in Node).
 - E2E script: 105/106. `prod_check`: 11/11. `pip-audit` and `npm audit --omit=dev`: clean.
 - Router eval: 299/299 (100%) when Ollama available.
-- **Agent eval: 32/33** — `read_tasks_without_mutation` asserts `write_journal` is empty after a read-only turn, but `orchestrator` calls `facts.harvest` on *every* tool result, and tool-result facts are stored ungated by `memory_auto_store`. `tasks.list` therefore journals two derived "Due: …" memories. Open: either gate `facts.harvest` on the pref, or narrow the case's assertion to the tool calls it already checks.
+- **Agent eval: needs re-running.** `read_tasks_without_mutation` asserts a read-only turn journals nothing; fact extraction used to store derived facts from R0 tools, which journaled a write. Facts now come from write tools only (`facts._is_write_tool`, gated on the R0/R1 risk boundary), so the cause is gone — but the case has not been re-run, since it needs a real `llama3.1:8b`. Verify before trusting the 33/33 figure below.
 - Do **not** run `backend -m unittest` and `npx vitest` concurrently — both saturate the box and heavy component renders hit their timeout. Run them sequentially.
 
 ## Quick Verification Checklist

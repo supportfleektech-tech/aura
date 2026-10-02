@@ -29,12 +29,14 @@ missions, runs a due consolidation pass, then drains the job queue.
   retry".
 - Interrupted `running` jobs are re-queued once at startup, so a restart loses
   nothing.
-- **Known gap, stated plainly:** nothing in production calls
-  `workers.enqueue`, so the scheduler's drain is a no-op and `worker_pool_size`
-  has no effect today. Mission and schedule ticks deliberately stay inline —
-  enqueuing them would race the pass that already ticked them and fire a step
-  twice. The Performance panel says this on screen rather than showing a
-  permanent row of zeros as if it meant something.
+- The mission cycle runs **through the queue**, so the pool is real: jobs
+  persist, survive a restart, and retry with backoff. One `mission_cycle` job
+  rather than two, because `drain` runs a claimed batch concurrently and the
+  schedules-before-missions ordering would not survive it. A test greps
+  `backend/app/` for an `enqueue` caller, because this branch wrote the rule
+  "a background function is not wired until something in `app/` calls it" after
+  a mission tick turned out to have no production caller while its tests were
+  green — and must not repeat it with its own flagship subsystem.
 
 ### Mission board (`/api/board`)
 

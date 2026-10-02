@@ -175,13 +175,18 @@ class WorkersTest(unittest.TestCase):
         workers.enqueue(workers.KIND_SCHEDULE_TICK, {}, priority=1)
         workers.enqueue("custom", {}, max_retries=0)
         r = workers.drain()
-        self.assertEqual(r, {"ran": 3, "done": 2, "retried": 0, "dead": 1}, r)
+        self.assertEqual({k: r[k] for k in ("ran", "done", "retried", "dead")},
+                         {"ran": 3, "done": 2, "retried": 0, "dead": 1}, r)
+        self.assertEqual(set(r["results"]), {"schedule_tick", "mission_tick"}, r)
         self.assertEqual(workers.stats()["done"], 2)
         self.assertEqual(workers.stats()["dead"], 1)
         self.assertEqual([j["kind"] for j in workers.dead_letters()], ["custom"])
 
     def test_drain_of_empty_queue_is_a_noop(self):
-        self.assertEqual(workers.drain(), {"ran": 0, "done": 0, "retried": 0, "dead": 0})
+        r = workers.drain()
+        self.assertEqual({k: r[k] for k in ("ran", "done", "retried", "dead")},
+                         {"ran": 0, "done": 0, "retried": 0, "dead": 0})
+        self.assertEqual(r["results"], {}, "an empty drain reports no per-kind results")
 
     def test_stats_shape(self):
         for k in ("queued", "running", "done", "dead", "throughput_per_min",
@@ -368,9 +373,17 @@ class MissionTickTest(unittest.TestCase):
         loop = inspect.getsource(hermes.start_scheduler_loop)
         self.assertIn("scheduler_pass()", loop, loop)
         self.assertNotIn("hermes.tick_automations()", loop, loop)
+        # The ticks moved behind the queue, so the guard follows them: the pass
+        # must enqueue a mission cycle, and the dispatcher must run both ticks.
+        # One hop further than before, same property — a mission cannot stop
+        # advancing without breaking this.
         body = inspect.getsource(workers.scheduler_pass)
-        self.assertIn("tick_missions()", body, body)
-        self.assertIn("tick_schedules()", body, body)
+        self.assertIn("enqueue(KIND_MISSION_CYCLE", body, body)
+        self.assertNotIn("_m.tick_missions()", body,
+                         "the cycle must go through the queue, not be called inline")
+        dispatch = inspect.getsource(workers._run)
+        self.assertIn("tick_missions()", dispatch, dispatch)
+        self.assertIn("tick_schedules()", dispatch, dispatch)
 
     def test_scheduler_pass_advances_a_running_mission(self):
         """The behaviour itself: one pass must finish a one-step mission.
@@ -393,6 +406,50 @@ class MissionTickTest(unittest.TestCase):
         after = self.c.get(f"/api/missions/{mid}").json()
         self.assertEqual(after["status"], "done", after)
         self.assertEqual(after["steps"][0]["status"], "done")
+
+    def test_enqueue_has_a_production_caller(self):
+        """The pool must be wired, not merely implemented.
+
+        This branch wrote the rule into AGENTS.md — "a background function is not
+        wired until something in `app/` calls it" — after a mission tick turned
+        out to have no production caller while its tests were green. The same
+        mistake would make `enqueue` an 11-test shell and leave the perf panel
+        showing zeros forever. Grep `app/`, never `tests/`.
+        """
+        import ast as _ast
+        from pathlib import Path
+
+        app_dir = Path(__file__).resolve().parents[1] / "app"
+        callers = []
+        for py in app_dir.rglob("*.py"):
+            if "__pycache__" in py.parts:
+                continue
+            try:
+                tree = _ast.parse(py.read_text())
+            except SyntaxError:
+                continue
+            for n in _ast.walk(tree):
+                if isinstance(n, _ast.Call):
+                    fn = n.func
+                    name = fn.attr if isinstance(fn, _ast.Attribute) else (
+                        fn.id if isinstance(fn, _ast.Name) else None)
+                    if name == "enqueue":
+                        callers.append(f"{py.relative_to(app_dir)}:{n.lineno}")
+        self.assertTrue(callers, "workers.enqueue has no caller in backend/app — the pool is inert")
+
+    def test_scheduler_pass_runs_the_mission_cycle_through_the_queue(self):
+        """The cycle must go via the queue, not an inline call.
+
+        Pinned because the inline version also worked, so no behavioural test
+        could tell them apart — the only difference is durability: a queued job
+        survives a restart and retries with backoff.
+        """
+        db.run("DELETE FROM worker_jobs")
+        workers.scheduler_pass()
+        kinds = {r["kind"] for r in db.q("SELECT DISTINCT kind FROM worker_jobs")}
+        self.assertIn(workers.KIND_MISSION_CYCLE, kinds,
+                      f"mission cycle was not enqueued; kinds seen: {kinds}")
+        self.assertEqual(workers.stats()["queued"], 0, "the pass must also drain what it enqueues")
 
     def test_scheduler_pass_ticks_due_schedules(self):
         """The other half of the bug: tick_schedules was also uncalled.
