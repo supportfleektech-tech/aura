@@ -28,10 +28,10 @@ function stubDataTransfer() {
 
 const CARD = { id: 1, goal: "Plan my week", status: "draft", steps_total: 2, steps_done: 0, next_run_at: "", created_at: "", updated_at: "" };
 const COLUMNS = [
-  { key: "backlog", label: "Backlog", missions: [CARD] },
-  { key: "running", label: "Running", missions: [] as typeof CARD[] },
-  { key: "awaiting", label: "Needs you", missions: [] as typeof CARD[] },
-  { key: "done", label: "Finished", missions: [] as typeof CARD[] },
+  { key: "backlog", label: "Backlog", missions: [CARD], total: 1 },
+  { key: "running", label: "Running", missions: [] as typeof CARD[], total: 0 },
+  { key: "awaiting", label: "Needs you", missions: [] as typeof CARD[], total: 0 },
+  { key: "done", label: "Finished", missions: [] as typeof CARD[], total: 0 },
 ] as any;
 
 describe("KanbanView", () => {
@@ -123,5 +123,27 @@ describe("KanbanView", () => {
     render(<KanbanView />);
     await waitFor(() => expect(screen.getByText("Plan my week")).toBeTruthy());
     expect(screen.getByText("1 of 134 missions")).toBeTruthy();
+  });
+
+  it("does not present a truncated per-column count as the column's real size", async () => {
+    // Above the server's BOARD_LIMIT the board loads only the newest `limit` rows, so
+    // `missions` is a prefix of the column. The header pill must read the server's
+    // per-column total, not the number of cards that happened to be loaded.
+    (api.board.get as any).mockResolvedValue({
+      columns: [
+        { key: "backlog", label: "Backlog", missions: [CARD], total: 134 },
+        { key: "running", label: "Running", missions: [], total: 9 },
+        { key: "awaiting", label: "Needs you", missions: [], total: 0 },
+        { key: "done", label: "Finished", missions: [], total: 0 },
+      ],
+      counts: { backlog: 1, running: 0, awaiting: 0, done: 0 },
+      total: 143,
+    });
+    render(<KanbanView />);
+    await waitFor(() => expect(screen.getByText("Plan my week")).toBeTruthy());
+    // The loaded card count (1) must not be what the Backlog pill claims.
+    expect(screen.getByTestId("col-count-backlog").textContent).toBe("134");
+    expect(screen.getByTestId("col-count-running").textContent).toBe("9");
+    expect(screen.getByTestId("col-count-awaiting").textContent).toBe("0");
   });
 });

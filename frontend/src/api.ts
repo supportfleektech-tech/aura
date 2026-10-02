@@ -522,7 +522,7 @@ export interface VoiceCall {
   turns: number; summary: string; model: string; source: string; transcript?: string;
 }
 export type BoardMission = { id: number; goal: string; status: string; steps_total: number; steps_done: number; next_run_at: string; created_at: string; updated_at: string };
-export type BoardColumn = { key: "backlog" | "running" | "awaiting" | "done"; label: string; missions: BoardMission[] };
+export type BoardColumn = { key: "backlog" | "running" | "awaiting" | "done"; label: string; missions: BoardMission[]; total: number };
 
 /* worker queue (spec §5, FR-WRK-001..005) — the seven keys `workers.stats()` returns */
 export type WorkerStats = { queued: number; running: number; done: number; dead: number; throughput_per_min: number; error_rate: number; by_kind: Record<string, number> };

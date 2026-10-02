@@ -50,6 +50,38 @@ class BoardTest(unittest.TestCase):
         body = r.json()
         self.assertGreaterEqual(body["total"], sum(body["counts"].values()))
         self.assertEqual(body["total"], db.qone("SELECT COUNT(*) AS n FROM missions WHERE user_id=1")["n"])
+        # Per-column totals must describe the whole column, not the loaded cards:
+        # every one has to be >= the number of cards actually rendered for it.
+        for col in body["columns"]:
+            self.assertGreaterEqual(col["total"], len(col["missions"]), col["key"])
+        self.assertEqual(sum(c["total"] for c in body["columns"]), body["total"])
+
+    def test_column_totals_survive_the_board_limit(self):
+        """The real defect: above `BOARD_LIMIT` the columns hold more rows than the
+        board loads, so `missions.length` is a truncated figure. The per-column total
+        must keep counting every row, and must keep agreeing with the column a status
+        lands in — an unmapped status belongs to backlog, exactly as `_card` places it.
+        """
+        from app.routes import kanban as kb
+
+        db.run("DELETE FROM missions")
+        n = kb.BOARD_LIMIT + 25  # more than the board loads, all in one column
+        db.run_many("INSERT INTO missions (user_id, goal, status, created_at, updated_at) "
+                    "VALUES (1,?,?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                    [(f"Bulk mission {i}", "draft") for i in range(n)])
+        db.run("INSERT INTO missions (user_id, goal, status, created_at, updated_at) "
+               "VALUES (1,'Odd status','triage','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')")
+
+        body = self.c.get("/api/board").json()
+        by_key = {c["key"]: c for c in body["columns"]}
+        self.assertEqual(len(by_key["backlog"]["missions"]), kb.BOARD_LIMIT)
+        self.assertEqual(by_key["backlog"]["total"], n + 1,
+                         "the backlog total must count every row, not just the loaded ones")
+        self.assertEqual(body["total"], n + 1)
+        # The unloaded rows must be invisible in the count, not reported as the truth.
+        self.assertLess(len(by_key["backlog"]["missions"]), by_key["backlog"]["total"])
+        self.assertEqual(sum(c["total"] for c in body["columns"]), body["total"])
+        db.run("DELETE FROM missions")
 
     def test_move_start_then_pause(self):
         mid = self._mission("draft")

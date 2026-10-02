@@ -51,12 +51,26 @@ def board():
     by_col: dict[str, list[dict]] = {k: [] for k, _, _ in COLUMNS}
     for m in _m.list_missions(limit=BOARD_LIMIT):
         by_col[_STATUS_TO_COLUMN.get(m["status"], "backlog")].append(_card(m))
-    # Only the newest BOARD_LIMIT missions are loaded, so the column counts are
-    # a truncated figure. Report the real total next to them rather than letting
-    # the client present a partial list as the whole truth.
-    row = _m.db.qone("SELECT COUNT(*) AS n FROM missions WHERE user_id=1")
-    total = int(row["n"]) if row else 0
-    return {"columns": [{"key": k, "label": lab, "missions": by_col[k]} for k, lab, _ in COLUMNS],
+    # Only the newest BOARD_LIMIT missions are loaded, so the column card counts are
+    # a truncated figure. Report the real per-column totals next to them rather than
+    # letting the client present a partial list as the whole truth — a header pill
+    # reading `missions.length` is exactly that lie once a column holds more rows
+    # than were loaded.
+    #
+    # `list_missions` filters on `user_id=1` and nothing else, so grouping the whole
+    # set by status describes exactly the rows the columns are built from, and the
+    # same `_STATUS_TO_COLUMN` mapping (unknown status -> backlog) has to be applied
+    # to both so a column's total can never disagree with where its cards land. This
+    # replaces the old single `COUNT(*)` with a `GROUP BY`, so the per-column totals
+    # cost no extra query.
+    col_totals = {k: 0 for k, _, _ in COLUMNS}
+    total = 0
+    for r in _m.db.q("SELECT status, COUNT(*) AS n FROM missions WHERE user_id=1 GROUP BY status"):
+        n = int(r["n"] or 0)
+        total += n
+        col_totals[_STATUS_TO_COLUMN.get(r["status"], "backlog")] += n
+    return {"columns": [{"key": k, "label": lab, "missions": by_col[k], "total": col_totals[k]}
+                        for k, lab, _ in COLUMNS],
             "counts": {k: len(v) for k, v in by_col.items()},
             "total": total, "limit": BOARD_LIMIT}
 

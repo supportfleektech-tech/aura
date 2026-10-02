@@ -69,7 +69,10 @@ export function KanbanView() {
               void move(card, c.key);
             }}
           >
-            <header><strong>{c.label}</strong><Pill c="blue">{c.missions.length}</Pill></header>
+            {/* `c.total` is the column's real size from the server; `missions` is
+                only the newest `limit` of them, so `missions.length` would report a
+                truncated number as if it were the whole column. */}
+            <header><strong>{c.label}</strong><Pill c="blue"><span data-testid={`col-count-${c.key}`}>{c.total}</span></Pill></header>
             {c.missions.map((m) => (
               <div
                 key={m.id}
