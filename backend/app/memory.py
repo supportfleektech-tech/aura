@@ -223,8 +223,14 @@ class MemoryEngine:
               sensitivity: str | None = None, embedder=None) -> dict:
         sensitivity = sensitivity or sensitivity_scan(f"{title}\n{content}")
         dup = self._duplicate_of(content)
-        if dup:
-            _before = db.qone("SELECT * FROM memories WHERE id=?", (dup,))
+        # Read the pre-image in the same breath as the dedupe decision. `_duplicate_of`
+        # matches through an FTS join, so the row it names can be deleted between the
+        # two reads. There is then nothing left to re-confirm or to merge a
+        # sensitivity label onto, so the honest answer is to fall through and store
+        # the memory fresh (`deduped: False`) rather than dereference None — the
+        # caller only ever sees a real row either way.
+        _before = db.qone("SELECT * FROM memories WHERE id=?", (dup,)) if dup else None
+        if dup and _before is not None:
             # A re-confirmation must never weaken an existing label. Otherwise a
             # fact that arrives as `private` (e.g. a client contact — the
             # scanner has no email/phone pattern) and dedupes onto a row an
@@ -241,7 +247,11 @@ class MemoryEngine:
             from . import undo as _u
             _u.record("memory.store", "update", "memories", dup, _before,
                       f"memories#{dup} re-confirmed (dedup)")
-            row = db.qone("SELECT * FROM memories WHERE id=?", (dup,))
+            # Same race as above, one step later: the row can also be deleted between
+            # the UPDATE and this read. `_before` is non-None here, so falling back to
+            # the pre-image keeps the unpack total; in the normal case `row` wins and
+            # the return value is unchanged.
+            row = db.qone("SELECT * FROM memories WHERE id=?", (dup,)) or _before
             return {"id": dup, "deduped": True, **row}
         emb, emb_name = _embed(content if embedder else f"{title}\n{content}", embedder)
         mid = db.run(
