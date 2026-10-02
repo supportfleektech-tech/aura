@@ -45,6 +45,7 @@ BUDGETS_MS = {
     "tool_exec": 200,
     "mission_plan": 200,
     "chat_turn_builtin": 800,
+    "token_batch": 5,
 }
 
 RUNS = int(sys.argv[sys.argv.index("--runs") + 1]) if "--runs" in sys.argv else 20
@@ -89,6 +90,13 @@ def main() -> int:
         for _ in orch.run_turn("plan my day", session_id="bench-sess"):
             pass
     results["chat_turn_builtin"] = bench("chat_turn_builtin", _turn)
+
+    def _batch():
+        b = orch.TokenBatcher(0.0)
+        for t in ("a", "b", "c", "d", "e", "f", "g", "h"):
+            b.add(t)
+        b.flush()
+    results["token_batch"] = bench("token_batch", _batch)
 
     print("\n== summary ==")
     over = {k: v for k, v in results.items() if v > BUDGETS_MS[k]}

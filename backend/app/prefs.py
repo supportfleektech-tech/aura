@@ -112,6 +112,10 @@ SCHEMA: dict[str, tuple[Any, str, Any]] = {
     "retention_last_run": (0, "int", (0, 2**31)),
     "consolidate_enabled": (True, "bool", None),
     "consolidate_last_run": (0, "int", (0, 2**31)),
+    # performance (FR-PERF-003/004). cache_ttl_s=0 turns the read-through cache
+    # off entirely; sse_batch_ms=0 emits one token event per token, unbatched.
+    "cache_ttl_s": (30, "int", (0, 3600)),
+    "sse_batch_ms": (40, "int", (0, 500)),
     # secrets (write-only via API)
     "openrouter_key": ("", "secret", 300),
     "openai_key": ("", "secret", 300),

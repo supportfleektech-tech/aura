@@ -1077,6 +1077,50 @@ def _sse(event: str, data: dict) -> str:
     )
 
 
+class TokenBatcher:
+    """Coalesce stream tokens into one SSE payload per interval (FR-PERF-004).
+
+    Yielding one `token` event per model token means 60+ frames per second, each
+    with its own JSON envelope and its own React re-render. Batching to ~25 fps is
+    well above the rate a typewriter effect needs to look continuous.
+
+    Two properties are load-bearing:
+
+    * The payload shape is unchanged — still `{"text": …}` — so only its
+      *granularity* changes and the frontend contract does not move. The `result`
+      event still carries the complete text, so nothing reading the final answer
+      is affected.
+    * The first token of a turn flushes immediately (`_last` starts at 0.0), so
+      the time-to-first-pixel is unchanged. A buffer that waited out its first
+      interval would push the first visible token behind the model's
+      time-to-first-token, which is the latency the user actually feels.
+
+    `min_interval_s=0` flushes every token, which is exactly the unbatched
+    behaviour and what a `sse_batch_ms` of 0 restores.
+    """
+
+    def __init__(self, min_interval_s: float = 0.04):
+        self._min = max(0.0, float(min_interval_s))
+        self._buf: list[str] = []
+        self._last = 0.0
+
+    def add(self, tok: str) -> str:
+        """Buffer a token. Returns the payload to emit now, or "" to wait."""
+        self._buf.append(tok)
+        now = time.monotonic()
+        if self._min <= 0 or (now - self._last) >= self._min:
+            return self.flush()
+        return ""
+
+    def flush(self) -> str:
+        """Everything buffered, or "" if nothing is. Idempotent."""
+        if not self._buf:
+            return ""
+        out, self._buf = "".join(self._buf), []
+        self._last = time.monotonic()
+        return out
+
+
 def ensure_session(session_id: str | None, domain: str) -> str:
     if session_id:
         s = db.qone("SELECT id FROM sessions WHERE id=?", (session_id,))
@@ -1132,6 +1176,14 @@ def _parallel_steps_enabled() -> bool:
         return bool(_prefs.get("chat_parallel_steps"))
     except Exception:
         return True
+
+
+def _batch_interval() -> float:
+    """SSE token batch interval in seconds. 0 disables batching (one token per event)."""
+    try:
+        return max(0, int(_prefs.get("sse_batch_ms"))) / 1000.0
+    except Exception:
+        return 0.04
 
 
 def _is_parallel_step(step: dict) -> bool:
@@ -1500,6 +1552,10 @@ def run_turn(
     # journaled under "vision" rather than "chat" in llm_usage.
     purpose = "vision" if _cloud_image_urls else "chat"
 
+    # One batcher for the whole turn: every branch below appends through it and
+    # flushes before leaving, so a partial batch is never lost on a fall-through.
+    batcher = TokenBatcher(_batch_interval())
+
     try:
         for backend in model_router.chain():
             if backend == "ollama" and probe["local_lfm"]["online"]:
@@ -1508,7 +1564,13 @@ def run_turn(
                     stream = model_router.ollama.chat_stream(messages, purpose=purpose)
                     for tok in stream:
                         token_buffer.append(tok)
-                        yield _sse("token", {"text": tok})
+                        payload = batcher.add(tok)
+                        if payload:
+                            yield _sse("token", {"text": payload})
+                            tokens_yielded = True
+                    tail = batcher.flush()
+                    if tail:
+                        yield _sse("token", {"text": tail})
                         tokens_yielded = True
                     final_text = "".join(token_buffer)
                     # Use model from probe if available, else from ollama client
@@ -1518,6 +1580,13 @@ def run_turn(
                     model_name = f"ollama/{ollama_model}"
                     break
                 except Exception as e:
+                    # The stream died mid-answer. Anything still sitting in the
+                    # batcher belongs to text the user was already shown a
+                    # partial preview of — flush it before continuing the chain.
+                    tail = batcher.flush()
+                    if tail:
+                        yield _sse("token", {"text": tail})
+                        tokens_yielded = True
                     stream_failed = True
                     db.log_activity(
                         "run",
@@ -1549,16 +1618,32 @@ def run_turn(
                 # request outright. Retry non-streaming before giving up —
                 # otherwise the user's chosen model is silently replaced by the
                 # builtin composer.
+                cloud_first = len(token_buffer)
                 try:
                     for tok in model_router.cloud.chat_stream(
                         safe, purpose=purpose, reasoning=reasoning, images=imgs
                     ):
                         token_buffer.append(tok)
-                        yield _sse("token", {"text": tok})
-                        tokens_yielded = True
+                        payload = batcher.add(tok)
+                        if payload:
+                            yield _sse("token", {"text": payload})
+                            tokens_yielded = True
                 except Exception as e:
+                    tail = batcher.flush()
+                    if tail:
+                        yield _sse("token", {"text": tail})
+                        tokens_yielded = True
                     db.log_activity("run", "Cloud stream failed, retrying once",
                                     str(e)[:120], "general", "warn")
+                tail = batcher.flush()
+                if tail:
+                    yield _sse("token", {"text": tail})
+                    tokens_yielded = True
+                # "We received stream tokens" — not "we emitted an event": inside
+                # the batch interval a fast stream can end without ever flushing,
+                # and retrying non-streaming then would duplicate the whole answer.
+                if len(token_buffer) > cloud_first:
+                    tokens_yielded = True
                 if not tokens_yielded:
                     text = (model_router.cloud.chat(
                         safe, purpose=purpose, images=imgs
@@ -1600,10 +1685,16 @@ def run_turn(
     # Only replay tokens if NO tokens were streamed (cloud/builtin path)
     if not tokens_yielded:
         yield _sse("orb", {"state": "working"})
+        replay = TokenBatcher(_batch_interval())
         words = final_text.split(" ")
         for i in range(0, len(words), 4):
-            buf = " ".join(words[i : i + 4])
-            yield _sse("token", {"text": buf + (" " if i + 4 < len(words) else "")})
+            chunk = " ".join(words[i : i + 4]) + (" " if i + 4 < len(words) else "")
+            payload = replay.add(chunk)
+            if payload:
+                yield _sse("token", {"text": payload})
+        tail = replay.flush()
+        if tail:
+            yield _sse("token", {"text": tail})
     engine = (
         "cloud"
         if model_name.startswith("cloud/")

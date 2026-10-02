@@ -7,10 +7,27 @@ import sqlite3
 import time
 
 from . import config, db, prefs
+from .cache import DEFAULT_TTL_S, TTLCache, tuned_ttl
 from .hermes import TOOLS, HERMES_VERSION
 from .inference import router as model_router
 
 _STARTED = time.time()
+
+# `system_status()` is NOT cached: DB size, disk free, uptime and the tool
+# counters are live facts and a stale "disk 98% full" is a lie. Only the two
+# probes below are, and only their expensive leg:
+#
+#   * `_probe_lfm` makes a real HTTP GET (`router.ollama.healthy()`, which
+#     deliberately bypasses the router's own 20s memo) on every /api/health hit.
+#     "Local LFM" is a SOFT_SERVICE, so a ≤30s-late verdict cannot turn /api/health
+#     `ok` false — and `active_model.local_online`, from `router.probe()`, is
+#     already ≤20s stale in the same payload. The cloud-*configured* string is
+#     rebuilt live every call, so a key added in Settings shows up immediately
+#     instead of contradicting `cloud_configured` two lines below.
+#   * `_probe_vector` runs a `COUNT(*) ... WHERE embedding_json != ''` full scan
+#     per poll. It can only ever return "online" — both branches do — so nothing
+#     about it can go stale; only the "N indexed" detail can.
+_probe_cache = TTLCache(max_entries=2, ttl_s=DEFAULT_TTL_S)
 
 
 def _probe_db() -> tuple[str, str, int]:
@@ -26,7 +43,12 @@ def _probe_db() -> tuple[str, str, int]:
 def _probe_lfm() -> tuple[str, str, int]:
     from .inference import router
 
-    ok, note = router.ollama.healthy()
+    _probe_cache.set_ttl(tuned_ttl())
+    leg = _probe_cache.get("ollama_healthy")
+    if leg is None:
+        leg = router.ollama.healthy()  # the network call — the expensive part
+        _probe_cache.set("ollama_healthy", leg)
+    ok, note = leg
     cloud = router.probe()["cloud"]
     if cloud["configured"]:
         cs = f"ready ({cloud['provider']}/{cloud['model']} · {prefs.get('privacy')})"
@@ -38,6 +60,16 @@ def _probe_lfm() -> tuple[str, str, int]:
 
 
 def _probe_vector() -> tuple[str, str]:
+    _probe_cache.set_ttl(tuned_ttl())
+    hit = _probe_cache.get("vector")
+    if hit is not None:
+        return hit
+    out = _vector_detail()
+    _probe_cache.set("vector", out)
+    return out
+
+
+def _vector_detail() -> tuple[str, str]:
     try:
         import chromadb  # noqa: F401
 

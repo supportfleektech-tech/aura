@@ -17,6 +17,7 @@ import time
 import httpx
 
 from . import db, prefs
+from .cache import DEFAULT_TTL_S, TTLCache, tuned_ttl
 
 _LAST_SYNC = {"ts": 0.0}
 
@@ -93,7 +94,7 @@ def _normalize(raw: dict) -> dict:
     return out
 
 
-def live_list(timeout: float = 4.0) -> dict:
+def _live_list_uncached(timeout: float = 4.0) -> dict:
     """GET /api/tags once. Never raises: {ok, models?|error?}."""
     try:
         r = httpx.get(f"{_base()}/api/tags", timeout=timeout)
@@ -108,9 +109,55 @@ def live_list(timeout: float = 4.0) -> dict:
     return {"ok": True, "models": models, "base_url": _base()}
 
 
+# The probe is an HTTP GET and `live_list` sits under /api/health, /api/ollama/*
+# and the model room, so a short read-through cache removes a network round trip
+# per poll. `_FAIL_TTL_S` keeps a *failure* out of the cache almost immediately:
+# Ollama restarting has to become visible in seconds, not after a full TTL.
+_catalog_cache = TTLCache(max_entries=4, ttl_s=DEFAULT_TTL_S)
+_FAIL_TTL_S = 2.0
+_TAGS = "tags"
+
+
+def invalidate_catalog() -> None:
+    """Drop the cached probe. Called whenever the catalog is rewritten, so an
+    explicit refresh always refreshes."""
+    _catalog_cache.clear()
+
+
+def live_list(timeout: float = 4.0, use_cache: bool = True) -> dict:
+    """Cached wrapper around the /api/tags probe.
+
+    `use_cache=False` is the honest path for anything that *verifies* rather
+    than displays: `sync()` (an explicit refresh) and `set_default()` (which
+    validates a model name against the catalog) both take it, so no validation
+    can ever be satisfied by a stale answer.
+
+    The TTL comes from Settings (`cache_ttl_s`) and is read per call, not baked
+    in, so retuning takes effect without a restart; 0 disables caching.
+    """
+    if not use_cache:
+        return _live_list_uncached(timeout)
+    _catalog_cache.set_ttl(tuned_ttl())
+    hit = _catalog_cache.get(_TAGS)
+    if hit is not None:
+        return dict(hit)  # copy: the cached envelope must not be mutable by a caller
+    out = _live_list_uncached(timeout)
+    # Store a copy: the value handed to a caller on a miss must never be the
+    # object a later reader gets back, or one caller's edit poisons the cache.
+    _catalog_cache.set(_TAGS, dict(out), ttl_s=_FAIL_TTL_S if not out.get("ok") else None)
+    return out
+
+
 def sync(force: bool = False) -> dict:
-    """Refresh the cached catalog. On failure the previous cache survives."""
-    res = live_list()
+    """Refresh the cached catalog. On failure the previous cache survives.
+
+    Bypasses the read-through cache and drops it: a sync exists to re-read
+    Ollama, so reading a 30s-stale answer here would stamp a fresh `synced_at`
+    onto a catalog nobody re-read — the panel would then claim "synced just now"
+    for data that is up to half a minute old.
+    """
+    invalidate_catalog()
+    res = _live_list_uncached()
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if not res.get("ok"):
         db.log_activity("system", "Ollama sync skipped", res.get("error", "?")[:140], "general", "warn")
@@ -171,7 +218,9 @@ def set_default(role: str, name: str) -> dict:
         raise ValueError("model name required")
     known = {m["name"] for m in cached()}
     if not known:  # cache empty — try live before trusting the name
-        live = live_list(timeout=2.5)
+        # Uncached on purpose: this is a validation, and a stale catalog must not
+        # be able to accept a model Ollama no longer has (or reject one it does).
+        live = _live_list_uncached(timeout=2.5)
         if live.get("ok"):
             known = {m["name"] for m in live["models"]}
     if not known:

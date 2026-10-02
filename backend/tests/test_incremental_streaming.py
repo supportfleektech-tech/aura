@@ -1,4 +1,5 @@
 import json
+import time
 from contextlib import ExitStack
 from unittest.mock import patch, MagicMock
 from app import orchestrator
@@ -6,7 +7,9 @@ from app import orchestrator
 import unittest
 
 
-class IncrementalTurnTest(unittest.TestCase):
+class _StreamHarness(unittest.TestCase):
+    """Drives `run_turn` with the router stubbed and returns parsed SSE events."""
+
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -36,6 +39,8 @@ class IncrementalTurnTest(unittest.TestCase):
             return [(e.split("\n", 1)[0][7:], json.loads(e.split("data: ", 1)[1]))
                     for e in orchestrator.run_turn("hello", "session")]
 
+
+class IncrementalTurnTest(_StreamHarness):
     def test_success_tokens_are_not_replayed(self):
         events = self.events(lambda *a, **kw: iter(["First ", "last"]))
         self.assertEqual([d["text"] for e, d in events if e == "token"], ["First ", "last"])
@@ -96,6 +101,87 @@ class IncrementalTurnTest(unittest.TestCase):
         gc.collect()
         self.assertTrue(stream.closed,
                         "closing the turn must release the upstream LLM connection")
+
+
+class TokenBatchingTest(unittest.TestCase):
+    def test_the_first_token_flushes_immediately_then_the_interval_applies(self):
+        """The first token must not wait out an interval: buffering it would put
+        the first visible token behind the model's time-to-first-token."""
+        from app.orchestrator import TokenBatcher
+        b = TokenBatcher(min_interval_s=0.05)
+        self.assertEqual(b.add("a"), "a", "the first token flushes at once")
+        self.assertEqual(b.add("b"), "", "a token inside the interval waits")
+        time.sleep(0.06)
+        self.assertEqual(b.add("c"), "bc", "a token past the interval flushes the buffer plus itself")
+        self.assertEqual(b.flush(), "", "buffer was already flushed")
+
+    def test_flush_emits_the_remainder(self):
+        from app.orchestrator import TokenBatcher
+        b = TokenBatcher(min_interval_s=60.0)
+        self.assertEqual(b.add("x"), "x", "the first token flushes at once")
+        self.assertEqual(b.add("y"), "", "the second waits out a 60s interval")
+        self.assertEqual(b.flush(), "y")
+        self.assertEqual(b.flush(), "", "flush must be idempotent")
+
+    def test_flush_on_empty_buffer_is_empty(self):
+        from app.orchestrator import TokenBatcher
+        self.assertEqual(TokenBatcher().flush(), "")
+
+    def test_concatenated_batches_equal_the_original_text(self):
+        from app.orchestrator import TokenBatcher
+        b = TokenBatcher(min_interval_s=0.0)
+        toks = ["Hello", ",", " ", "world", "!"]
+        out = [b.add(t) for t in toks]
+        out.append(b.flush())
+        self.assertEqual("".join(p for p in out if p), "".join(toks))
+
+    def test_zero_interval_emits_one_payload_per_token(self):
+        """sse_batch_ms=0 must restore the unbatched behaviour exactly."""
+        from app.orchestrator import TokenBatcher
+        b = TokenBatcher(min_interval_s=0.0)
+        self.assertEqual([b.add(t) for t in ("a", "b")], ["a", "b"])
+
+
+class StreamedTokensAreNeverDroppedTest(_StreamHarness):
+    """Whatever the batcher is doing, the client must end up with every token the
+    model produced — including when the stream dies mid-answer."""
+
+    def test_a_stream_that_dies_mid_answer_still_flushes_its_partial_batch(self):
+        def stream(*args, **kwargs):
+            yield "aa"
+            yield "bb"  # these two sit inside the batch interval
+            raise RuntimeError("broken")
+
+        events = self.events(stream)
+        streamed = "".join(d["text"] for e, d in events if e == "token")
+        self.assertEqual(streamed, "aabb", "a token already received must never be dropped")
+
+    def test_fast_stream_collapses_into_one_event(self):
+        """The point of the feature: a burst of tokens inside one interval
+        becomes one frame, and nothing is lost doing it."""
+        def stream(*args, **kwargs):
+            for tok in ("one ", "two ", "three"):
+                yield tok
+
+        events = self.events(stream)
+        payloads = [d["text"] for e, d in events if e == "token"]
+        self.assertEqual(payloads, ["one ", "two three"],
+                         "3 tokens must become 2 frames, not 3")
+        result = next(d for e, d in events if e == "result")
+        self.assertEqual(result["text"], "one two three")
+
+    def test_slow_stream_still_emits_each_token_as_it_arrives(self):
+        """Batching must never delay a token that has already waited longer than
+        the interval — that is what a typewriter effect needs to look continuous."""
+
+        def stream(*args, **kwargs):
+            for tok in ("one ", "two ", "three"):
+                yield tok
+                time.sleep(0.06)
+
+        events = self.events(stream)
+        payloads = [d["text"] for e, d in events if e == "token"]
+        self.assertEqual(payloads, ["one ", "two ", "three"])
 
 
 if __name__ == "__main__":
