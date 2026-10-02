@@ -59,6 +59,7 @@ def analyze_image(data: bytes, mime: str = "image/png", question: str = "") -> d
     msgs = [{"role": "user", "content": prompt}]
 
     from .inference import OllamaClient, get_cloud_client, router
+    router.activate_local()
     try:
         pr = router.probe()
         chain = router.chain()

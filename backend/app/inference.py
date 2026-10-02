@@ -1569,30 +1569,83 @@ class ModelRouter:
         self._ollama_ok: bool | None = None
         self._ollama_note = ""
         self._checked_at = 0.0
+        # On-demand: nothing talks to Ollama until something asks for a local
+        # answer. See `_local_dormant`.
+        self._local_active = False
 
     @property
     def cloud(self) -> CloudClient:
         """Fresh client per access so settings changes apply without restart."""
         return get_cloud_client()
 
+    def _local_dormant(self) -> bool:
+        """True when Ollama should not be contacted because nothing activated it.
+
+        On-demand is the point: an idle AURA should not hold a TCP connection to
+        a local model server, and the health panel should say "not started"
+        rather than reporting a box the user never booted. Every path that
+        actually wants a local answer calls `activate_local()` first — a typed
+        message is an explicit request for one.
+        """
+        try:
+            if not prefs.get("ollama_on_demand"):
+                return False
+        except Exception:
+            return False
+        return not self._local_active
+
+    def activate_local(self, force: bool = False) -> bool:
+        """Mark Ollama as wanted for this process, and probe it once.
+
+        Returns whether it answered. Idempotent: a second call is a no-op unless
+        `force`, so the generation path can call it on every turn cheaply.
+        """
+        if self._local_active and not force:
+            return bool(self._ollama_ok)
+        self._local_active = True
+        self._checked_at = 0.0  # force the next probe to re-check
+        self.probe()
+        return bool(self._ollama_ok)
+
+    def _cloud_leg(self) -> dict:
+        """The cloud half of `probe()`, shared by the live and dormant paths.
+
+        Deliberately does not go through the `cloud` property twice: building a
+        client is cheap but it is still work an idle process should not repeat on
+        every poll.
+        """
+        cloud = self.cloud
+        return {
+            "configured": cloud.configured(),
+            "model": cloud.model,
+            "base": cloud.base,
+            "provider": cloud.provider,
+        }
+
     def probe(self) -> dict:
+        if self._local_dormant():
+            return {
+                "local_lfm": {
+                    "online": False,
+                    "note": "dormant — not started (on-demand)",
+                    "model": self.ollama.model,
+                },
+                "cloud": self._cloud_leg(),
+                "builtin": {"online": True, "note": "grounded composer"},
+                "privacy": prefs.get("privacy"),
+                "on_demand": True,
+            }
         now = time.time()
         if self._ollama_ok is None or now - self._checked_at > 20:
             self._ollama_ok, self._ollama_note = self.ollama.healthy()
             self._checked_at = now
-        cloud = self.cloud
         return {
             "local_lfm": {
                 "online": self._ollama_ok,
                 "note": self._ollama_note,
                 "model": self.ollama.model,
             },
-            "cloud": {
-                "configured": cloud.configured(),
-                "model": cloud.model,
-                "base": cloud.base,
-                "provider": cloud.provider,
-            },
+            "cloud": self._cloud_leg(),
             "builtin": {"online": True, "note": "grounded composer"},
             "privacy": prefs.get("privacy"),
         }

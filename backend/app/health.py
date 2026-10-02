@@ -61,6 +61,10 @@ def _probe_lfm() -> tuple[str, str, int]:
     # Settings change of `ollama_base_url` must not keep serving the previous
     # machine's verdict. This is the one other cache key in the module that was
     # input-blind; `vector` reads no mutable setting, only a row count.
+    if router._local_dormant():
+        # On-demand: report "not started" without opening a connection to a
+        # model server the user never booted.
+        return "degraded", "dormant — not started (on-demand)", 0
     key = f"ollama_healthy:{router.ollama.base}"
     leg = _probe_cache.get(key)
     if leg is None:

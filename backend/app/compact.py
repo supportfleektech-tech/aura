@@ -56,6 +56,9 @@ def _render(chunk: list[dict], old: str) -> str:
 def _llm_summary(chunk: list[dict], old: str) -> str:
     try:
         from .inference import model_router
+        # Summarising a conversation is work, so it activates the on-demand
+        # local backend just like a turn does.
+        model_router.activate_local()
         probe = model_router.probe()
         msgs = [{"role": "system", "content":
                  "Summarize this conversation segment in 2-4 sentences for continuity: "

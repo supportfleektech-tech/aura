@@ -227,6 +227,7 @@ def _logs(_args: str) -> dict:
 def _think(args: str) -> dict:
     _need(args, "/think <prompt>")
     from .inference import router as _r
+    _r.activate_local()
     if not _r.probe().get("local_lfm", {}).get("online"):
         raise ValueError("local model is offline — start Ollama, or use /ask")
     return {"text": _r.ollama.chat([{"role": "user", "content": args}], purpose="chat")}
@@ -239,6 +240,7 @@ def _ask(args: str) -> dict:
         raise ValueError("Usage: /ask <model> <prompt>")
     model, prompt = parts
     from .inference import router as _r
+    _r.activate_local()
     return {"model": model,
             "text": _r.ollama.chat([{"role": "user", "content": prompt}],
                                    model=model, purpose="chat")}

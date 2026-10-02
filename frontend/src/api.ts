@@ -432,6 +432,7 @@ export const api = {
   },
   /* ---- v1.14 machine room ---- */
   ollama: {
+    activate: () => post<{ ok: boolean; online: boolean }>("/ollama/activate"),
     status: () => get<{ reachable: boolean; base_url: string; model_count: number; synced_at: string; stale: boolean;
       error: string; chat_model: string; vision_model: string; embed_model: string; auto_sync: boolean }>("/ollama/status"),
     models: () => get<{ reachable: boolean; base_url: string; error?: string; models: OllamaModel[] }>("/ollama/models"),

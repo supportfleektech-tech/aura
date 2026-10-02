@@ -437,6 +437,20 @@ export function SettingsView() {
           </div>
           <SetRow title="Image understanding" sub="Describe attached images with the vision model (local first, cloud when allowed)."
             control={<Toggle on={draft.vision_enabled !== false} onFlip={() => save({ vision_enabled: draft.vision_enabled === false })} label="vision" />} />
+          <SetRow title="Start Ollama on demand"
+            sub="On: nothing contacts your local models until you send a message or press Start. Off: AURA probes Ollama on its own schedule."
+            control={<Toggle on={draft.ollama_on_demand !== false} onFlip={() => save({ ollama_on_demand: draft.ollama_on_demand === false })} label="on-demand" />} />
+          <SetRow title="Background model sync" sub="Refresh the model list on a timer. Off means Ollama is only read when you ask."
+            control={<Toggle on={!!draft.ollama_auto_sync} onFlip={() => save({ ollama_auto_sync: !draft.ollama_auto_sync })} label="auto-sync" />} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn small kind="violet" onClick={async () => {
+              try {
+                const j = await api.ollama.activate();
+                toast(j.online ? "Ollama started and answered" : "Ollama asked, nothing answered", j.online ? "success" : "warn");
+                refresh();
+              } catch (e) { toast(`Could not reach Ollama: ${e instanceof Error ? e.message : e}`, "error"); }
+            }}>Start Ollama now</Btn>
+          </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <Btn small kind="violet" onClick={() => save({ ollama_base_url: draft.ollama_base_url, ollama_chat_model: draft.ollama_chat_model, ollama_vision_model: draft.ollama_vision_model }, "Local LFM saved")}>Save LFM</Btn>
             <Btn small onClick={async () => { await refresh(); toast("Refreshed", "success"); }}><Icon n="refresh" s={14} /> Refresh status</Btn>

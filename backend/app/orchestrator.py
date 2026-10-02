@@ -1551,7 +1551,10 @@ def run_turn(
         else messages
     )
 
-    # Streaming generation: use ollama.chat_stream directly for real-time tokens
+    # Streaming generation: use ollama.chat_stream directly for real-time tokens.
+    # A typed message IS the user asking for an answer, so it activates the
+    # on-demand local backend; only idle probes stay dormant.
+    model_router.activate_local()
     probe = model_router.probe()
     final_text = ""
     model_name = ""

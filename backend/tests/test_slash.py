@@ -578,7 +578,9 @@ class SlashTest(unittest.TestCase):
 
         from app.inference import router as r_
         real = r_.ollama
+        real_active = r_._local_active
         r_.ollama = _Ollama()
+        r_._local_active = True  # already activated; /ask must not re-probe
         try:
             r = slash.execute("/ask qwen2.5:1.5b summarise my day")
             self.assertTrue(r["ok"], r)
@@ -588,6 +590,7 @@ class SlashTest(unittest.TestCase):
             self.assertEqual(calls["messages"], [{"role": "user", "content": "summarise my day"}])
         finally:
             r_.ollama = real
+            r_._local_active = real_active
 
     def test_mission_creates_and_is_listed(self):
         r = slash.execute("/mission T-Slash plan the release week")

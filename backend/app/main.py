@@ -994,6 +994,19 @@ def ollama_sync_now():
     return r if r.get("ok") else JSONResponse(r, status_code=502)
 
 
+@app.post("/api/ollama/activate")
+def ollama_activate():
+    """Explicitly start contacting Ollama (on-demand backends).
+
+    On-demand means nothing probes Ollama until the user asks for a local
+    answer — a typed message does that on its own, but so should a deliberate
+    "Start Ollama" click before typing anything.
+    """
+    online = model_router.activate_local(force=True)
+    pr = model_router.probe()
+    return {"ok": True, "online": bool(online), "probe": pr}
+
+
 @app.get("/api/ollama/models")
 def ollama_models():
     from . import ollama_sync

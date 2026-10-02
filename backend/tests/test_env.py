@@ -39,6 +39,7 @@ _SCRATCH_PREFIXES = (
     "aura-workers-",
     "aura-cache-",
     "aura-slash-",
+    "aura-ondemand-",
 )
 
 # Two overlapping suite runs share these prefixes, so a young directory may

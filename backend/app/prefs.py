@@ -34,7 +34,10 @@ SCHEMA: dict[str, tuple[Any, str, Any]] = {
     "ollama_vision_model": ("llava", "str", 200),
     "ollama_embed_model": (config.OLLAMA_EMBED_MODEL, "str", 200),
     # ollama model-room sync (v1.14)
-    "ollama_auto_sync": (True, "bool", None),
+    "ollama_auto_sync": (False, "bool", None),
+    # On-demand: nothing contacts Ollama until a local answer is actually
+    # wanted. Off = AURA probes Ollama on its own schedule.
+    "ollama_on_demand": (True, "bool", None),
     "ollama_sync_interval_min": (30, "int", (1, 1440)),
     # local terminal / machine control (v1.14)
     "terminal_enabled": (True, "bool", None),

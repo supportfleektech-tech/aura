@@ -3735,7 +3735,9 @@ class MachineRoomTest(unittest.TestCase):
         self.assertEqual(st["model_count"], 3)
         self.assertTrue(st["synced_at"])
         self.assertEqual(st["chat_model"], "llama3.1")
-        self.assertTrue(st["auto_sync"])
+        # On-demand posture: background auto-sync is opt-in, so the default is
+        # off and the status must report that truthfully.
+        self.assertFalse(st["auto_sync"])
 
     def test_a2_ollama_sync_formatted_parameter_sizes(self):
         from unittest.mock import patch as _patch
