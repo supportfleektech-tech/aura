@@ -191,9 +191,13 @@ def _t_machine_room():
     con = sqlite3.connect(dbp)
     try:
         tabs = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        # worker_jobs is v1.16's persistent queue. Its absence is not cosmetic:
+        # `workers.stats()` groups over it and `requeue_stale` rewrites it, so a
+        # missing table means every panel reads zero and no interrupted job can
+        # be recovered.
         need = {"ollama_models", "terminal_runs", "feeds", "feed_items", "calls",
-                "scripts", "watched_files"}
-        assert need <= tabs, f"missing v1.14 tables: {sorted(need - tabs)}"
+                "scripts", "watched_files", "worker_jobs"}
+        assert need <= tabs, f"missing v1.14/v1.16 tables: {sorted(need - tabs)}"
     finally:
         con.close()
     s, d = req("/api/ollama/status")
@@ -206,9 +210,14 @@ def _t_machine_room():
     assert s == 200 and "scripts" in d, f"scripts HTTP {s}"
     s, d = req("/api/watch")
     assert s == 200 and "paths" in d and "default_dir" in d, f"watch HTTP {s}"
+    # The queue surface the perf panel reads must answer, or the panel is a
+    # blank pane on a release that shipped it.
+    s, d = req("/api/workers")
+    assert s == 200 and {"stats", "pool_size"} <= set(d), f"workers HTTP {s}"
+    assert {"queued", "dead", "by_kind"} <= set(d.get("stats") or {}), d.get("stats")
     s2, o = req("/api/ollama/status")
     tag = "" if o.get("reachable") else " · ollama offline — cached catalog, builtin engine covers"
-    return f"v1.14 tables + endpoints live{tag}"
+    return f"v1.14/v1.16 tables + endpoints live{tag}"
 
 
 print("== prod live ==")
@@ -217,7 +226,7 @@ check("live version matches code", _t_live_version)
 check("backup recency", _t_backup_fresh)
 check("push ready", _t_push_ready)
 check("cloud sane", _t_cloud_sane)
-check("machine room (v1.14)", _t_machine_room)
+check("machine room (v1.14) + worker queue (v1.16)", _t_machine_room)
 
 print("\n================ SUMMARY ================")
 print(f"PASS: {len(PASS)}   FAIL: {len(FAIL)}   WARN: {len(WARN)}")

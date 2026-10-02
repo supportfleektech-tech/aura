@@ -10,6 +10,7 @@ const KanbanView = lazy(() => import("./views2/kanban").then((m) => ({ default: 
 const FilesView = lazy(() => import("./views2").then((m) => ({ default: m.FilesView })));
 const GatewayView = lazy(() => import("./views2").then((m) => ({ default: m.GatewayView })));
 const MemoryView = lazy(() => import("./views2").then((m) => ({ default: m.MemoryView })));
+const PerfView = lazy(() => import("./views2").then((m) => ({ default: m.PerfView })));
 const SettingsView = lazy(() => import("./views2").then((m) => ({ default: m.SettingsView })));
 const SmartHomeView = lazy(() => import("./views2").then((m) => ({ default: m.SmartHomeView })));
 const VoiceView = lazy(() => import("./views2").then((m) => ({ default: m.VoiceView })));
@@ -55,6 +56,7 @@ function Shell() {
             {view === "terminal" && <TerminalView />}
             {view === "models" && <ModelsView />}
             {view === "feeds" && <FeedsView />}
+            {view === "perf" && <PerfView />}
             {view === "settings" && <SettingsView />}
             </Suspense>
             </ErrorBoundary>
@@ -62,7 +64,7 @@ function Shell() {
           <RightRail />
         </div>
         <footer className="foot">
-          <span>AURA OS v1.15.0 · Built with ♥ using Hermes Agent · Local LFM · Memory Engine · SQLite</span>
+          <span>AURA OS v1.16.0 · Built with ♥ using Hermes Agent · Local LFM · Memory Engine · SQLite</span>
           <span>Smarter. Healthier. More Productive. — AURA OS</span>
         </footer>
       </div>

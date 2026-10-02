@@ -2,9 +2,44 @@
 
 Honest assessment after a full audit. Ordered by impact. Single-user is a
 deliberate design choice (item 1 deferred by owner). Items 2–15 all shipped;
-v1.14 added the machine layer, v1.15 hardened it. Current baseline: 344 unit
-+ 175 frontend + 101 E2E + 299 router-eval + 33 agent-eval green, plus
-`prod_check` 11/11.
+v1.14 added the machine layer, v1.15 hardened it, v1.16 closed the 2026-09-26
+comprehensive-enhancement spec. Current baseline: 495 unit + 238 frontend +
+105/106 E2E + 299 router-eval + 32/33 agent-eval green, plus `prod_check` 11/11.
+The two red marks are both pre-existing and both diagnosed in `AGENTS.md`: the
+E2E miss is `_cosine` being a dot product on unnormalized Ollama embeddings, and
+the agent-eval miss is `facts.harvest` writing memories on a read-only tool
+result.
+
+## Shipped in v1.16.0 — Missions that move, plus the queue, board and commands
+
+- ~~**Missions that never advanced**~~ — the fix that motivated the release.
+  `tick_missions()` / `tick_schedules()` had no callers in `app/`, so a started
+  mission sat `running` with every step pending, forever, while the suite stayed
+  green. One `scheduler_pass()` is now the loop body.
+- ~~**Worker pool + persistent queue**~~ — `worker_jobs`, single-statement
+  claim (no double-claim under concurrency), exponential backoff, dead-letter
+  queue, startup re-queue of interrupted jobs. **Gap, on the record:** nothing
+  enqueues into it yet, so the queue reads zero until a producer exists.
+- ~~**Mission board**~~ — four columns derived from existing statuses, every
+  move through `missions.set_status`. Dragging to Finished *cancels*: the only
+  route to `done` is a mission actually finishing.
+- ~~**Slash commands**~~ — 26 built-ins in six categories plus custom commands,
+  over HTTP *and* as a chat-stream short-circuit (a leading `/` never spends a
+  model call). Composer palette + Settings cheat sheet.
+- ~~**Memory consolidation**~~ — nightly dedupe, importance re-scoring behind a
+  whole-second watermark, archival of low-signal rows. Every write is soft.
+- ~~**Fact extraction from tool results**~~ — the half of fact mining that only
+  tool output could reach; chat text was already covered.
+- ~~**Caching layer**~~ — in-process TTL + LRU with Redis-equivalent read-through
+  semantics. Deliberately not Redis: one process, one DB, no external services.
+- ~~**SSE token batching**~~ — coalesce streamed tokens on a `sse_batch_ms`
+  window; the event shape is unchanged.
+- ~~**Performance panel**~~ — live queue depth, throughput, error rate, dead
+  letters, per-kind counts and consolidation state.
+- ~~**E2E coverage for all of it**~~ — five new checks, including the `slash`
+  SSE path, which is a different code path from `POST /api/slash/execute`.
+
+Still open, and still open honestly: P0 item 1 (auth) below.
 
 ## Shipped in v1.15.0 — Fortress hardening
 

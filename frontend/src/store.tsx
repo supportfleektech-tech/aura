@@ -14,7 +14,8 @@ import { getServer, loadServerSettings, voicePreferenceKey } from "./prefs";
 export const VIEWS = [
   "home", "career", "clients", "personal", "inbox", "calendar", "memory",
   "sessions", "voice", "gateway", "automations", "board", "activity",
-  "analytics", "smarthome", "files", "models", "terminal", "feeds", "settings",
+  "analytics", "smarthome", "files", "models", "terminal", "feeds", "perf",
+  "settings",
 ] as const;
 
 export type View = (typeof VIEWS)[number];

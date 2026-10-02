@@ -333,6 +333,9 @@ export function SettingsView() {
             control={<select value={lang} onChange={(e) => setLang(e.target.value as "en" | "sw")}><option value="en">English</option><option value="sw">Kiswahili</option></select>} />
           <SetRow title="Streaming replies" sub="Typewriter effect while AURA answers."
             control={<Toggle on={!!draft.chat_streaming} onFlip={() => save({ chat_streaming: !draft.chat_streaming })} label="streaming" />} />
+          <SetRow title="SSE batching" sub="Coalesce streamed tokens to cut render churn (0 = every token)."
+            control={<Slider value={Number(draft.sse_batch_ms ?? 40)} min={0} max={200} step={10}
+              onPick={(v) => set("sse_batch_ms", v)} format={(v) => (v === 0 ? "off" : `${v}ms`)} />} />
           <SetRow title="Enter sends" sub="Off: Enter adds a line, Ctrl+Enter sends."
             control={<Toggle on={draft.enter_to_send !== false} onFlip={() => save({ enter_to_send: draft.enter_to_send === false })} label="enter to send" />} />
           <SetRow title="Message timestamps" sub="Show time under each message."
@@ -403,6 +406,22 @@ export function SettingsView() {
             </span>} />
           <SetRow title="Auto-store memories" sub="AURA extracts durable facts from chat."
             control={<Toggle on={draft.memory_auto_store !== false} onFlip={() => save({ memory_auto_store: draft.memory_auto_store === false })} label="auto-store" />} />
+          <SetRow title="Worker pool size" sub="How many jobs AURA runs at once (1-8). Only matters once something enqueues work."
+            control={<Slider value={Number(draft.worker_pool_size ?? 3)} min={1} max={8} step={1}
+              onPick={(v) => set("worker_pool_size", v)} format={(v) => `${v}`} />} />
+          <SetRow title="Job retries" sub="Attempts before a job is dead-lettered (0-5)."
+            control={<Slider value={Number(draft.worker_max_retries ?? 3)} min={0} max={5} step={1}
+              onPick={(v) => set("worker_max_retries", v)} format={(v) => `${v}`} />} />
+          {/* A Slider only edits the draft; without this the two controls above
+              would be permanently invisible, saving the wrong rows silently. */}
+          <div style={{ marginTop: 8 }}><Btn small kind="violet" onClick={() => save({
+            worker_pool_size: draft.worker_pool_size ?? 3,
+            worker_max_retries: draft.worker_max_retries ?? 3,
+          }, "Worker settings saved")}>Save worker settings</Btn></div>
+          <SetRow title="Memory consolidation" sub="Nightly dedupe and re-scoring of your memory."
+            control={<Toggle on={draft.consolidate_enabled !== false}
+              onFlip={() => save({ consolidate_enabled: draft.consolidate_enabled === false })}
+              label="consolidation" />} />
           <SetRow title="Observability retention" sub="Activity/audit/tool logs older than this are pruned nightly. Never touches your content."
             control={<Slider value={Number(draft.retention_days ?? 90)} min={0} max={365} step={5}
               onPick={(v) => set("retention_days", v)} format={(v) => (v === 0 ? "forever" : `${v}d`)} />} />

@@ -33,7 +33,7 @@ OPENROUTER_TITLE = os.environ.get("AURA_OPENROUTER_TITLE", "AURA OS")
 DEFAULT_PRIVACY = os.environ.get("AURA_PRIVACY", "local-first")  # local-first | hybrid | cloud
 
 HERMES_VERSION = os.environ.get("HERMES_VERSION", "2.0.0")
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.16.0"
 API_PREFIX = "/api"
 def _int_env(name: str, default: int) -> int:
     try:

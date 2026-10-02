@@ -5,3 +5,4 @@ export { MissionsPanel, AutomationsView } from "./automations";
 export { ActivityView } from "./activity";
 export { LookPanel, FilesView } from "./files";
 export { BrowserAlertSettings, SettingsView } from "./settings";
+export { PerfView } from "./perf";

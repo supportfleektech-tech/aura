@@ -1,5 +1,108 @@
 # AURA OS — Changelog
 
+## v1.16.0 — Missions that actually move, plus the queue, board and commands
+
+### The bug that mattered most: missions never advanced
+
+`missions.tick_missions()` and `missions.tick_schedules()` had **no call sites
+outside `backend/tests/`**. `hermes.start_scheduler_loop` only ever called
+`tick_automations()`, so a mission started from the UI or from chat sat at
+`status='running'` with every step `pending`, indefinitely, and the test suite
+stayed green because the tests called `tick_missions()` by hand. A background
+function is not wired until something in `app/` calls it.
+
+Fixed by the new `workers.scheduler_pass()` — the single 30-second pass the
+scheduler loop body calls, and nothing else. It ticks automations, schedules and
+missions, runs a due consolidation pass, then drains the job queue.
+
+### Worker pool and persistent queue (`worker_jobs`)
+
+- Claim with a single `UPDATE ... RETURNING`, not SELECT → UPDATE → re-SELECT.
+  The three-statement form double-claims under concurrency: two threads select
+  the same id, both update (the second is a no-op, not a failure), then both run
+  the job. Realised in a probe by widening the select→update gap to 20 ms —
+  4 concurrent claimers, 4 winners.
+- Retry with exponential backoff (`2^attempts * 5s`, capped at 5 min), then a
+  dead-letter with the error preserved.
+- `attempts` counts executions, not failures, so `max_retries: 3` runs a job at
+  most 4 times. `or 0` not `or 3` when reading the pref: 0 is a legal "never
+  retry".
+- Interrupted `running` jobs are re-queued once at startup, so a restart loses
+  nothing.
+- **Known gap, stated plainly:** nothing in production calls
+  `workers.enqueue`, so the scheduler's drain is a no-op and `worker_pool_size`
+  has no effect today. Mission and schedule ticks deliberately stay inline —
+  enqueuing them would race the pass that already ticked them and fire a step
+  twice. The Performance panel says this on screen rather than showing a
+  permanent row of zeros as if it meant something.
+
+### Mission board (`/api/board`)
+
+A drag-drop view over mission status — four columns derived from the statuses
+that already existed, with every move going through `missions.set_status` so it
+cannot bypass the approval flow. There is no move *into* `done` that completes a
+mission: a drag to Finished **cancels**, because the only legitimate route to
+`done` is a mission actually finishing.
+
+### Slash commands (`/api/slash`)
+
+26 built-ins across six categories plus custom commands, reachable three ways:
+`GET /api/slash` (catalog, Python handlers stripped), `POST /api/slash/execute`,
+and a leading `/` in the chat stream, which short-circuits **before** the
+orchestrator and emits a single `slash` SSE event. `execute` never raises — a bad
+command is a `200` with `ok: false` and the reason in `text`, because a `500`
+would abort the stream it was fired from. `/` in the Composer opens a palette;
+the full cheat sheet with custom-command CRUD is in Settings → Commands.
+
+### Memory consolidation (`/api/consolidation`)
+
+Nightly dedupe, importance re-scoring and archival. Every write is a soft delete
+or a `supersedes_id` pointer. Re-scoring is the idempotent pass and the one that
+needed care: both signals are gated on a whole-second `consolidate_last_run`
+watermark, because scored on bare presence they re-apply forever and pin
+importance at its cap. Both sides of that comparison must resolve on the same
+one-second grid — a fractional parse makes a stamp written *during* a pass read
+newer than the watermark that pass ends by writing.
+
+### Fact extraction from tool results
+
+`MemoryEngine.observe` already mined facts out of *chat text*; it never looked at
+what tools returned. An email address handed back by `clients.create` or a due
+date from `tasks.create` is exactly the kind of durable fact that used to exist
+only until the chat scrolled away.
+
+Only high-signal structured fields are promoted (≤3 per result, contact details,
+dates, identifiers) — a tool's free-text output is `observe`'s job, and mining
+both would double-count. Two payload shapes have to be recognised because the
+routes return both: a wrapper (`{"clients": rows}` from `list_*`) and a bare row
+(from `create_*`/`update_*`/`get_*`). A bare row is discriminated on the entity's
+own columns, never on the tool name — within one family `clients.list` returns a
+wrapper and `clients.create` returns a row, so the name does not say which.
+
+### Performance: in-process cache + SSE token batching
+
+- TTL + LRU cache with Redis-equivalent semantics for hot read paths, including
+  the Ollama model catalog. The catalog cache is keyed on the base URL and
+  deep-copied on read: keying it on a constant served one machine's model list to
+  another, and handing out the live list let a caller mutate the cache in place.
+- Streamed tokens are coalesced on a `sse_batch_ms` window (default 40 ms, 0 =
+  every token). The event shape is unchanged, so no client had to change.
+
+### Performance panel (`/perf`)
+
+Queue depth, throughput, error rate, dead letters, per-kind counts, and the
+consolidation state — plus the honest-empties above, which are load-bearing
+rather than cosmetic.
+
+### Tests
+
+- `scripts/e2e_check.py` gains five checks covering consolidation, the worker
+  queue, the board's move guards, the slash catalog/execute/custom lifecycle, and
+  the `slash` SSE short-circuit — the last of which is a genuinely different code
+  path from `POST /api/slash/execute`.
+- `frontend/src/__tests__/perf.test.tsx` covers the panel, including that a drain
+  which dead-letters a job warns rather than celebrates.
+
 ## Unreleased — deployment + integration audit pass
 
 A second pass driven by actually running the thing: building the Docker image,

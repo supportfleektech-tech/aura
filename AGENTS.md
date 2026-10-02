@@ -44,14 +44,14 @@ npm run dev  # :5173, proxies /api to :8000 (start backend first)
 - `testTimeout` is 20 s in `vitest.config.ts` on purpose — a heavy `SettingsView` render exceeds the 5 s default under load.
 - `venv` has Playwright + Chromium, so a real browser pass against a live backend is available (console errors, breakpoints, a11y, chat). Component tests do not prove the UI renders.
 
-## Key Architecture (v1.15+)
+## Key Architecture (v1.16+)
 
-- **Backend routers** live in `app/routes/` (22 modules). `app/domain.py` is a thin re-export shim — hermes.py tool system references functions via `_lazy(".domain", "func_name")` and `_wrap_model(".domain", "func_name", "ModelName")`, so every name must be accessible from `app.domain`.
-- **Frontend views2** split into `src/views2/` (7 modules + barrel `index.ts`). All `import { X } from "./views2"` continue to work via the barrel.
+- **Backend routers** live in `app/routes/` (26 routers). `app/domain.py` is a thin re-export shim — hermes.py tool system references functions via `_lazy(".domain", "func_name")` and `_wrap_model(".domain", "func_name", "ModelName")`, so every name must be accessible from `app.domain`.
+- **Frontend views2** split into `src/views2/` (9 view modules + barrel `index.ts`). All `import { X } from "./views2"` continue to work via the barrel.
 - **Kokoro TTS + Personality** — Offline engine (`af_heart` default) in `backend/app/voice.py`; 4 controls (warmth/humour/style/pacing) wired via `inference.py`. `scripts/download_kokoro.py` fetches 136 MB to `DATA_DIR/models/kokoro/`.
 - **MCP connection manager** — Streamable HTTP endpoints in `backend/app/mcp_connections.py` with DNS pinning, byte caps, redirect blocking, per-tool enablement, confirmation flow, credential isolation.
-- **Memory retrieval** — Union of 30 ranked FTS + 400 recent; embedding fallback fixed. Tests: `backend/tests/test_memory_retrieval.py`.
-- **Frontend lazy loading** — Views + Three.js lazy-loaded; main chunk ~258 kB (was 863 kB).
+- **Memory retrieval** — Union of 30 ranked FTS + 400 recent; embedding fallback fixed. Tests: `backend/tests/test_memory_retrieval.py`. **Ranking is currently wrong** — see the `_cosine` gotcha below.
+- **Frontend lazy loading** — Views + Three.js lazy-loaded; main chunk ~268 kB (was 863 kB).
 
 ## Wiring & Pitfalls
 
@@ -84,11 +84,11 @@ npm run dev  # :5173, proxies /api to :8000 (start backend first)
 ## Test Quirks
 
 - **Run single test**: `AURA_DATA_DIR="$(mktemp -d)" OLLAMA_BASE_URL=http://127.0.0.1:1 ../venv/bin/python -m unittest tests.test_aura.AuraTest.test_task_create_echoes_title`
-- **Full backend suite must be fully green (344 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
-- Frontend: 175/175 Vitest tests pass (jsdom; `api.test.ts` runs in Node).
-- E2E script: 101/101. `prod_check`: 11/11 (1 benign warn — no backup archive yet). `pip-audit` and `npm audit --omit=dev`: clean.
+- **Full backend suite must be fully green (495 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
+- Frontend: 238/238 Vitest tests pass (jsdom; `api.test.ts` runs in Node).
+- E2E script: 105/106. `prod_check`: 11/11. `pip-audit` and `npm audit --omit=dev`: clean.
 - Router eval: 299/299 (100%) when Ollama available.
-- **Agent eval: 33/33 (100%)** — requires real Ollama with `llama3.1:8b` model for full pass.
+- **Agent eval: 32/33** — `read_tasks_without_mutation` asserts `write_journal` is empty after a read-only turn, but `orchestrator` calls `facts.harvest` on *every* tool result, and tool-result facts are stored ungated by `memory_auto_store`. `tasks.list` therefore journals two derived "Due: …" memories. Open: either gate `facts.harvest` on the pref, or narrow the case's assertion to the tool calls it already checks.
 - Do **not** run `backend -m unittest` and `npx vitest` concurrently — both saturate the box and heavy component renders hit their timeout. Run them sequentially.
 
 ## Quick Verification Checklist
@@ -140,8 +140,23 @@ Without `llama3.1:8b`, agent eval falls back to builtin composer (~48% pass).
 
 ## Gotchas not covered above
 
-- **Verify the container actually serves the UI**: `docker build . && docker run -p 8010:8000 …`, then assert `GET /` is 200 — not just `GET /api/health`. The image uses a different directory layout than the checkout.
+- **Verify the container actually serves the UI**: `docker build . && docker run -p 8010:8000 …`, then assert `GET /` returns 200 with assets — not just `GET /api/health`. The image uses a different directory layout than the checkout. A fresh `/data` volume also has `onboarded=false`, so the OnboardingGate overlay swallows every click; PATCH `{"onboarded":true}` before driving the UI in the image.
+- **A background function is not wired until something calls it.** `missions.tick_missions()`
+  and `tick_schedules()` had no call sites outside tests, so missions never advanced in
+  production while the suite stayed green. When you add a periodic function, grep for its
+  callers from `app/` — not from `tests/` — and assert the wiring in a test that reads the
+  scheduler source, since a sleeping daemon thread cannot be exercised directly.
+- **`_cosine` in `app/memory.py` is a dot product, not a cosine.** Ollama embeddings are not
+  unit-norm (measured ‖v‖ ≈ 20), so `relevance`/`match` are dominated by vector *norm* and
+  semantic ranking degenerates into "longest vector wins" — `hashed_embed` returns unit
+  vectors, which is why this never surfaced on the hashed path. `GET /api/workers` etc. are
+  fine; this is memory search only, and it is what fails `docx upload+index+search` in
+  `e2e_check.py`. Unfixed as of v1.16.0 — normalize both sides before trusting a semantic hit.
 - **When you change a response shape, grep the old key** across `frontend/src/api.ts`, `backend/app/orchestrator.py`, and `scripts/e2e_check.py` — all three read the same payloads.
 - `scripts/e2e_check.py` prints `@file.py:NN` for a failed bare assert; read that line instead of guessing which step broke.
+- `scripts/prod_check.py` reads `AURA_DB_PATH`/`AURA_DATA_DIR` from *its own* environment and
+  defaults to `ROOT/data/aura.db`. Point both at the same scratch dir the live backend uses,
+  or its `db integrity` and `machine room` checks fail on a missing file while the server is
+  happily running.
 - `parse_sleep_text` expects `"slept 11pm to 6am"` or `"log sleep 7.5 hours"`.
 - `start.sh` (untracked) starts backend + Vite dev server together for local work.

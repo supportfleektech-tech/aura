@@ -264,6 +264,15 @@ export const api = {
     move: (mission_id: number, column: string) =>
       post<{ ok: boolean; mission: BoardMission }>("/board/move", { mission_id, column }),
   },
+  workers: {
+    status: () => get<{ stats: WorkerStats; pool_size: number }>("/workers"),
+    dead: () => get<{ dead: DeadLetter[] }>("/workers/dead"),
+    drain: () => post<DrainResult>("/workers/drain", {}),
+  },
+  consolidation: {
+    status: () => get<{ enabled: boolean; due: boolean; last_run: Record<string, unknown> | null }>("/consolidation"),
+    run: () => post<ConsolidationPass>("/consolidation/run", {}),
+  },
   home: {
     status: () => get<HaStatus>(`/home/status`),
     entities: () => get<{ entities: HaEntity[]; mode: string; error?: string }>(`/home/entities`),
@@ -514,6 +523,12 @@ export interface VoiceCall {
 }
 export type BoardMission = { id: number; goal: string; status: string; steps_total: number; steps_done: number; next_run_at: string; created_at: string; updated_at: string };
 export type BoardColumn = { key: "backlog" | "running" | "awaiting" | "done"; label: string; missions: BoardMission[] };
+
+/* worker queue (spec §5, FR-WRK-001..005) — the seven keys `workers.stats()` returns */
+export type WorkerStats = { queued: number; running: number; done: number; dead: number; throughput_per_min: number; error_rate: number; by_kind: Record<string, number> };
+export type DeadLetter = { id: number; kind: string; attempts: number; max_retries: number; last_error: string; updated_at: string };
+export type DrainResult = { ran: number; done: number; retried: number; dead: number };
+export type ConsolidationPass = { scanned: number; merged: number; archived: number; rescored: number; duration_ms: number };
 
 /* tiny markdown: bold, italic, code, bullets, numbered, quotes, headings */
 export function md(src: string): string {

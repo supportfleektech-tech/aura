@@ -111,7 +111,7 @@ check("health ok + machine-room services", _t_health)
 
 def _t_system():
     s, d, _ = req("GET", "/api/system")
-    assert s == 200 and "runs_24h" in d["metrics"] and d["version"] == "1.15.0"
+    assert s == 200 and "runs_24h" in d["metrics"] and d["version"] == "1.16.0"
 check("system metrics", _t_system)
 def _t_me_tools():
     s1, d1, _ = req("GET", "/api/me")
@@ -1352,6 +1352,139 @@ def _t_mcheck_e2e():
     s, d, _ = req("GET", "/api/terminal/check?machine=ghosty")
     assert s == 200 and "unknown machine" in str(d.get("error", "")), d
 check("machine liveness check", _t_mcheck_e2e)
+
+
+# ================= v1.16 queue, board + slash =================
+print("== queue + board + slash ==")
+
+
+def _t_consolidation_e2e():
+    s, r, _ = req("GET", "/api/consolidation")
+    assert s == 200 and {"enabled", "due", "last_run"} <= set(r), (s, r)
+    s, p, _ = req("POST", "/api/consolidation/run", {})
+    assert s == 200, (s, p)
+    assert {"scanned", "merged", "archived", "rescored", "duration_ms"} <= set(p), p
+    assert p["duration_ms"] >= 0, p
+    # `last_run` is read back from the activity row the pass writes, so this
+    # asserts the audit trail too — not just the return value.
+    s, g, _ = req("GET", "/api/consolidation")
+    assert s == 200 and g.get("last_run"), (s, g)
+    assert "Consolidation pass" in (g["last_run"].get("title") or ""), g["last_run"]
+    # A second pass must be safe to run: it walks the live memory table and the
+    # idempotency watermark is the only thing stopping importance ratcheting up.
+    s, p2, _ = req("POST", "/api/consolidation/run", {})
+    assert s == 200 and p2["rescored"] == 0, p2
+check("consolidation: status + run + last_run recorded", _t_consolidation_e2e)
+
+
+def _t_workers_e2e():
+    s, r, _ = req("GET", "/api/workers")
+    assert s == 200, (s, r)
+    for k in ("queued", "running", "done", "dead", "throughput_per_min", "error_rate", "by_kind"):
+        assert k in r["stats"], (k, r)
+    assert 1 <= r["pool_size"] <= 8, r
+    s, d, _ = req("GET", "/api/workers/dead")
+    assert s == 200 and isinstance(d["dead"], list), (s, d)
+    s, o, _ = req("POST", "/api/workers/drain", {})
+    assert s == 200 and {"ran", "done", "retried", "dead"} <= set(o), (s, o)
+    # A drain of an empty queue is a no-op, not a failure: the pool exists but
+    # nothing enqueues into it yet. Asserting ran>0 would be asserting fiction.
+    assert o["ran"] == 0 or o["ran"] == o["done"] + o["retried"] + o["dead"], o
+check("workers: stats + dead letters + drain", _t_workers_e2e)
+
+
+def _t_board_e2e():
+    # "plan my day" so the template planner answers without an LLM round-trip.
+    s, m, _ = req("POST", "/api/missions", {"goal": "e2e board probe plan my day"})
+    assert s in (200, 201) and m.get("id"), (s, m)
+    mid = m["id"]
+    try:
+        s, _, _ = req("PATCH", f"/api/missions/{mid}", {"steps": [
+            {"kind": "tool", "label": "Status", "tool": "system.status", "args": {}}]})
+        assert s == 200, s
+        s, b, _ = req("GET", "/api/board")
+        assert s == 200, (s, b)
+        assert [c["key"] for c in b["columns"]] == ["backlog", "running", "awaiting", "done"], b
+        assert b["columns"][0]["missions"] is not None and b["total"] >= 1, b
+        # Draft → Finished is a *cancel*, not a completion: the only legitimate
+        # route to `done` is a mission actually finishing.
+        s, mv, _ = req("POST", "/api/board/move", {"mission_id": mid, "column": "done"})
+        assert s == 200 and mv["mission"]["status"] == "cancelled", (s, mv)
+        s, _, _ = req("POST", "/api/board/move", {"mission_id": mid, "column": "running"})
+        assert s == 409, s
+        s, _, _ = req("POST", "/api/board/move", {"mission_id": mid, "column": "nope"})
+        assert s == 400, s
+        s, _, _ = req("POST", "/api/board/move", {"mission_id": 99999999, "column": "running"})
+        assert s == 404, s
+    finally:
+        # No DELETE route exists for a mission, so a cancelled row survives —
+        # which is why this check never asserts on mission *counts*. The cancel
+        # is what matters: it stops the scheduler from ticking the mission.
+        req("POST", f"/api/missions/{mid}/control", {"action": "cancel"})
+check("board: columns, cancel-not-complete, 409/400/404 guards", _t_board_e2e)
+
+
+def _t_slash_e2e():
+    s, c, _ = req("GET", "/api/slash")
+    assert s == 200, (s, c)
+    names = {x["name"] for x in c["commands"]}
+    for n in ("/task", "/health", "/remember", "/switch"):
+        assert n in names, (n, sorted(names))
+    assert all("handler" not in x for x in c["commands"]), "handlers must not cross HTTP"
+    assert all({"name", "category", "summary", "example", "arg"} <= set(x) for x in c["commands"]), c["commands"][:1]
+    s, r, _ = req("POST", "/api/slash/execute", {"text": "/health"})
+    assert s == 200 and r["handled"] and r["ok"], (s, r)
+    s, r, _ = req("POST", "/api/slash/execute", {"text": "/remember"})
+    assert s == 200 and r["handled"] and not r["ok"] and "Usage" in r["text"], (s, r)
+    s, r, _ = req("POST", "/api/slash/execute", {"text": "not a command"})
+    assert s == 200 and not r["handled"], (s, r)
+    s, t, _ = req("POST", "/api/slash/execute", {"text": "/task e2e slash task"})
+    assert s == 200 and t["ok"], (s, t)
+    tid = t["result"]["task"]["id"]
+    try:
+        s, d, _ = req("POST", "/api/slash/execute", {"text": f"/done {tid}"})
+        assert s == 200 and d["ok"] and d["result"]["task"]["status"] == "completed", (s, d)
+        # Re-completing a finished task is refused rather than matching a loose
+        # title and closing the wrong row.
+        s, d2, _ = req("POST", "/api/slash/execute", {"text": "/done e2e slash task"})
+        assert s == 200 and not d2["ok"], (s, d2)
+    finally:
+        req("DELETE", f"/api/tasks/{tid}")
+    s, _, _ = req("POST", "/api/slash/custom", {"name": "/task", "prompt": "x"})
+    assert s == 400, s
+    s, _, _ = req("POST", "/api/slash/custom", {"name": "nope", "prompt": "x"})
+    assert s == 400, s
+    s, created, _ = req("POST", "/api/slash/custom", {"name": "/e2eprobe", "prompt": "e2e probe"})
+    assert s == 200 and created["name"] == "/e2eprobe", (s, created)
+    try:
+        s, listed, _ = req("GET", "/api/slash")
+        assert "/e2eprobe" in {x["name"] for x in listed["commands"]}, listed
+    finally:
+        s, _, _ = req("DELETE", "/api/slash/custom/e2eprobe")
+        assert s == 200, s
+        s, listed, _ = req("GET", "/api/slash")
+        assert "/e2eprobe" not in {x["name"] for x in listed["commands"]}, listed
+check("slash: catalog, usage error, task roundtrip, custom guard", _t_slash_e2e)
+
+
+def _t_slash_stream_e2e():
+    # `chat()` returns (intent, text), not the raw body — feeding it to sse()
+    # would AttributeError on tuple.split. Read the stream directly.
+    s, body, _ = req("POST", "/api/chat/stream", {"message": "/health"})
+    assert s == 200, (s, str(body)[:200])
+    evs = sse(body if isinstance(body, str) else "")
+    assert "slash" in evs, sorted(evs)
+    assert evs["slash"][0]["handled"] and evs["slash"][0]["ok"], evs["slash"][0]
+    assert evs["slash"][0]["command"] == "/health", evs["slash"][0]
+    # The short-circuit must still close the stream or the composer stays on
+    # "sending" forever.
+    assert "done" in evs, sorted(evs)
+    # A non-command must still stream normally, not be swallowed.
+    s, body2, _ = req("POST", "/api/chat/stream", {"message": "plan my day"})
+    evs2 = sse(body2 if isinstance(body2, str) else "")
+    assert "result" in evs2, sorted(evs2)
+    assert "slash" not in evs2, sorted(evs2)
+check("slash: chat stream short-circuits a command, not a sentence", _t_slash_stream_e2e)
 
 
 print("\n================ SUMMARY ================")

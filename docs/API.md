@@ -33,6 +33,7 @@ tool, `404` unknown id/tool. Timestamps are UTC ISO-8601.
 | `token` | `{text}` | Answer chunk (builtin engine sends one) |
 | `approval` | `{id, risk, title, drafts[]}` | Human decision required, turn pauses here |
 | `mission` | `{id, goal, status, step_idx, steps[]}` | Live mission progress (streamed for `mission_status`) |
+| `slash` | `{handled, ok, command, result, text, view}` | A leading `/` short-circuited the turn; no model call, no `result` follows |
 | `result` | `{text}` | Final rendered answer (markdown) |
 | `done` | `{session_id}` | Always last; resume with this id |
 
@@ -131,6 +132,27 @@ Priority: `low|medium|high|urgent`.
 - `PATCH /{mid}` → `memory_engine.update` result; `DELETE /{mid}` → soft-delete `{ok}`
 - `POST /forget` `{topic!}` → `{forgotten: n}` (hard erase by topic match)
 
+## Memory consolidation — `/api/consolidation`
+
+Nightly housekeeping over your memory table: dedupe, importance re-scoring, and
+archival of low-signal rows. Every write is a **soft** delete (`deleted_at`) or a
+`supersedes_id` pointer — there is no login here, so there is no way to prove a
+hard delete was intended.
+
+- `GET ""` → `{enabled, due, last_run}` — `due` is true at most once per 24h and
+  only while `consolidate_enabled` is on; `last_run` is the most recent
+  `Consolidation pass` activity row, or `null`.
+- `POST /run` → `{scanned, merged, archived, rescored, duration_ms}` — runs one
+  pass immediately and moves the `consolidate_last_run` watermark to now.
+- Re-scoring is the idempotent pass and the one the watermark guards: it scores
+  a signal (`last_confirmed`, or a `user-corrected:` source) only when the
+  signal's whole-second timestamp is strictly newer than the watermark, so
+  back-to-back passes cannot ratchet importance toward its cap. Dedupe and
+  archival stay stateful by design — merging and retiring rows is the point.
+- Archival only touches rows older than 30 days that are low-importance,
+  low-confidence, never re-confirmed and `normal` sensitivity; a row this pass
+  re-scored is promoted out of the archive set and picked up by a later one.
+
 ## Automations — `/api/automations`
 
 - `GET ""` → `{automations[]}` (incl. success/fail counts, next_run)
@@ -158,6 +180,55 @@ Priority: `low|medium|high|urgent`.
 - `POST /{mid}/control` `{action: start|pause|cancel}` → mission — one step executes per scheduler tick. R0/R1 run unattended; R2+ steps and `send_drafts` create approvals and park the mission in `awaiting`; resolving the approval resumes it (`result.mission`). Terminal: `done` (with `result` summary) / `failed` / `cancelled`. Every transition notifies; per-step check-ins via `mission_step_checkins` pref (default off).
 - Chat: `how are my missions going` → `mission_status` intent streams per-step progress as SSE `mission` events and summarizes in the reply.
 - Routines: briefing digests include `routines[]` (productive weekday, sleep drift, top spend — from `routines.py`, honest empties); proactive gains a `routine_drift` detector (sleep down >1h vs prior week → open Personal).
+
+## Mission board — `/api/board`
+
+A drag-drop **view** over mission status, never a second source of truth: every
+move goes through `missions.set_status`, so it cannot bypass the approval flow.
+
+- `GET ""` → `{columns: [{key, label, missions: [{id, goal, status, steps_total, steps_done, next_run_at, created_at, updated_at}]}], counts, total, limit}`. Four fixed columns: `backlog` (`draft`, `paused`), `running`, `awaiting` ("Needs you"), `done` (`done`, `failed`, `cancelled`). Only the newest `limit` (100) missions are loaded, so `counts` is a truncated figure — `total` is the real row count.
+- `POST /move` `{mission_id!, column!}` → `{ok, mission}`. `400` unknown column or non-integer `mission_id`, `404` unknown mission, `409` an illegal move. Moving to the column the card is already in is a no-op `200`.
+- Legal moves: `backlog→running` (start), `running|awaiting→backlog` (pause), and `backlog|running|awaiting→done` (**cancel**). There is no move *into* `done` that completes a mission — the only route to `done` is a mission actually finishing, so a drag to Finished cancels the card.
+
+## Worker queue — `/api/workers`
+
+A persistent job queue (`worker_jobs`) drained by an in-process `ThreadPoolExecutor`.
+Concurrency is threads, not asyncio, because the DB layer is one pooled SQLite
+connection behind an RLock; what genuinely parallelises is tool execution, which
+releases that lock while it waits on the network.
+
+- `GET ""` → `{stats: {queued, running, done, dead, throughput_per_min, error_rate, by_kind}, pool_size}`. `throughput_per_min` counts only jobs that **settled** (`done` or `dead`) in the last 60s — an enqueue is not throughput. `error_rate` is `dead / (done + dead)`, so it is `0.0` by construction when nothing has settled. `pool_size` is `worker_pool_size` clamped to 1–8.
+- `GET /dead[?limit=50]` → `{dead: [{id, kind, attempts, max_retries, last_error, updated_at}]}` — jobs that exhausted their retries, newest first.
+- `POST /drain` → `{ran, done, retried, dead}` — claims a batch (`min(limit, pool_size * 4)`), runs it on the pool, and settles each outcome. `retried` means the job is back on the queue with exponential backoff (`2^attempts * 5s`, capped at 5 min); `dead` means it dead-lettered.
+- `attempts` counts **executions**, not failures: `claim` increments it, so
+  `max_retries: 3` runs a job at most 4 times (3 retries, then dead-letter).
+- Interrupted `running` jobs are returned to `queued` once at startup, so a
+  restart loses nothing.
+- **Known gap:** nothing in production calls `workers.enqueue`, so the counters
+  above read zero and a drain is a no-op. The mission and schedule ticks run
+  inline on the scheduler thread precisely because enqueuing them would race that
+  call and fire a step twice.
+
+## Slash commands — `/api/slash`
+
+26 built-ins across six categories (`Navigation`, `Memory`, `Tasks`, `Automation`,
+`System`, `AI`) plus any custom commands. A command is deterministic, so it must
+not spend a model call.
+
+- `GET ""` → `{commands: [{name, category, summary, example, arg}]}` — Python
+  handlers are stripped; they never cross HTTP.
+- `POST /execute` `{text}` → `{handled, ok, command, result, text, view}`.
+  `handled: false` means the text was not a command. `execute` never raises: a
+  bad command is a `200` with `ok: false` and the reason in `text` (e.g. a
+  missing argument returns `Usage: /task <title>`), because a `500` here would
+  abort the chat stream it was fired from.
+- `POST /custom` `{name!, prompt!, view?}` → `{name, prompt, view}`; `DELETE /custom/{name}` → `{ok}` (accepts `/brief` or `brief`). `400` if the name does not start with `/`, contains whitespace, has no prompt, shadows a built-in, or names a `view` outside the shell's `View` union.
+- Chat: a leading `/` in `POST /api/chat/stream` short-circuits **before** the
+  orchestrator runs and emits a single `slash` SSE event (plus `done`), never a
+  `result`. Matching is at position 0 only, so prose containing a slash mid-
+  sentence is untouched, and any attachment disqualifies the shortcut.
+- Frontend: `/` in the Composer opens the command palette; the full cheat sheet
+  (with custom-command CRUD) lives in Settings → Commands.
 
 ## Proactive — `/api/proactive`
 

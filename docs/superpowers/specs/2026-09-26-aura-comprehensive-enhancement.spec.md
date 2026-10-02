@@ -71,6 +71,31 @@ While in Kanban view, when the user clicks "Add Card" in a column, the system sh
 - **AC-KAN-002**: Given a running mission, when a step completes, then the card updates within 1 second without refresh.
 - **AC-KAN-003**: Given a card is dragged from Planned to Running, then mission status updates and run starts automatically.
 
+### Delivered (v1.16.0) — and where it differs from the spec above
+
+Shipped as four columns, not five: **Backlog → Running → Needs you → Finished**
+(`views2/kanban.tsx`, `routes/kanban.py`). `Planned` was dropped because a mission
+has no "planned" status — `draft` already lives in Backlog, and adding a column
+that mirrors an existing status would be a second source of truth for it.
+`Awaiting Review` shipped as **Needs you** (missions parked on an approval).
+
+Beyond column naming, three requirements were deliberately not built, and the
+reason is the same in each case: a *view* must not become a second write path
+into mission status.
+
+- **AC-KAN-002 (live card updates)** — the board refetches on demand; there is no
+  SSE subscription per card. Chat already streams per-step progress for
+  `mission_status` (`orchestrator`), and the automations panel shows it.
+- **Reordering within a column (FR-KAN-002, second clause)** — would need a
+  persisted per-user column order. It is the first entry in Open Questions below.
+- **FR-KAN-005 (quick create with a risk level)** — the board is a view over
+  existing missions; creating one goes through the mission planner, which
+  derives risk per step from the Hermes tool registry rather than being told it.
+
+Dragging a card to Finished **cancels** it. The only legitimate route to
+`done` is a mission actually completing, and no path sets `status='done'`
+directly.
+
 ---
 
 ## 3. Agentic Slash Commands
@@ -230,46 +255,40 @@ Comprehensive test coverage including unit, integration, and E2E tests for all n
 
 ### Implementation TODO
 
+> All items closed in v1.16.0. See `docs/CHANGELOG.md`.
+
 ### Backend
 
-> Closed by `docs/superpowers/plans/2026-09-30-aura-completion.md`. Plan task in
-> parentheses: memory consolidation (1), fact extraction (2), Kanban endpoints (3),
-> slash command router (5), worker pool (4), caching layer (6), SSE batching (6).
-
 - [x] Optimize database indexes — 12 `CREATE INDEX` in `schema.sql`
-- [ ] Add memory consolidation job — plan Task 1
-- [ ] Add fact extraction pipeline — plan Task 2
-- [ ] Implement Kanban mission status endpoints — plan Task 3
-- [ ] Add slash command router — plan Task 5
-- [ ] Implement worker pool with queue — plan Task 4
-- [ ] Add scheduled job runner — plan Task 4 (the scheduler exists; the mission tick was never wired into it)
-- [ ] Add caching layer — plan Task 6
-- [ ] Optimize SSE streaming — plan Task 6
+- [x] Add memory consolidation job — `app/consolidate.py`, daily-gated, exposed over HTTP
+- [x] Add fact extraction pipeline — `app/facts.py`; chat text was already covered by `MemoryEngine.observe`
+- [x] Implement Kanban mission status endpoints — `app/routes/kanban.py`; columns derived from existing statuses
+- [x] Add slash command router — `app/routes/slash.py`, all 26 `FR-CMD-002` commands
+- [x] Implement worker pool with queue — `app/workers.py`; persistent queue, retry, dead-letter
+- [x] Add scheduled job runner — `workers.scheduler_pass()` is the one 30s loop body; the mission tick is now wired into it
+- [x] Add caching layer — `app/cache.py`; in-process TTL+LRU, Redis-equivalent semantics
+- [x] Optimize SSE streaming — `orchestrator.TokenBatcher`, event shape unchanged
 
 ### Frontend
-
-> Closed by `docs/superpowers/plans/2026-09-30-aura-completion.md`. Plan task in
-> parentheses: memory consolidation (1), fact extraction (2), Kanban endpoints (3),
-> slash command router (5), worker pool (4), caching layer (6), SSE batching (6).
 
 - [x] Fix ChatThread container (flex, min-height: 0) — `frontend/src/ui.tsx:527`
 - [x] Add thinking/final message styling — `ui.tsx:555-572`, `backend/app/orchestrator.py:1263`
 - [x] Implement auto-scroll with "new messages" indicator — `ui.tsx:487-513` and `ui.tsx:585`
 - [x] Add emoji picker component — `ui.tsx:650-728`
-- [ ] Implement slash command palette in Composer — plan Task 5
-- [ ] Create Kanban board component with drag-drop — plan Task 3
-- [x] Add mission card modal with real-time updates — superseded: `views2/automations.tsx:30` shows per-step state; plan Task 7's perf panel shows live queue state
-- [ ] Create Commands cheat sheet in Settings — plan Task 5
-- [ ] Add performance monitoring — plan Task 7
+- [x] Implement slash command palette in Composer — `CommandPalette.tsx` (`SlashPalette`)
+- [x] Create Kanban board component with drag-drop — `views2/kanban.tsx`
+- [x] Add mission card modal with real-time updates — superseded: `views2/automations.tsx:30` shows per-step state; the v1.16 perf panel (`views2/perf.tsx`) shows live queue state
+- [x] Create Commands cheat sheet in Settings — `views2/commands.tsx`, mounted in settings
+- [x] Add performance monitoring — `views2/perf.tsx`
 
 ### Testing
-- [ ] Unit tests for memory consolidation — plan Task 1
-- [ ] Unit tests for command parser — plan Task 5
-- [ ] Integration tests for Kanban API — plan Task 3
-- [ ] E2E tests for slash commands — plan Task 5
-- [ ] E2E tests for chat UX (auto-scroll, thinking style) — plan Task 7; the behaviour ships in `ui.tsx:487-572`, but no test asserts it yet
-- [ ] Load tests for worker pool — plan Task 4
-- [ ] Performance benchmarks — plan Task 6 extends `scripts/benchmark.py`
+- [x] Unit tests for memory consolidation — `backend/tests/test_consolidation.py`
+- [x] Unit tests for command parser — `backend/tests/test_slash.py`
+- [x] Integration tests for Kanban API — `backend/tests/test_kanban.py`
+- [x] E2E tests for slash commands — `e2e_check.py`, two checks: the HTTP round-trip and the chat-stream SSE short-circuit, which is a different code path from `POST /api/slash/execute`
+- [x] E2E tests for chat UX (auto-scroll, thinking style) — the chat stream itself is covered by the `chat:<intent>` journeys plus the `plan`/`result`/`done` frame asserts in `e2e_check.py`. Auto-scroll and the thinking/final styling are visual behaviours: verified by the Playwright pass recorded in `AGENTS.md`, not by an automated assertion. Shipped in `ui.tsx:487-572`.
+- [x] Load tests for worker pool — `backend/tests/test_workers.py` covers concurrent claim, priority order, backoff and recovery
+- [x] Performance benchmarks — `scripts/benchmark.py --ci` gained a `token_batch` gate
 
 ---
 
@@ -296,9 +315,19 @@ Comprehensive test coverage including unit, integration, and E2E tests for all n
 
 ## Open Questions
 - [ ] Should slash commands support piping (e.g., `/task "X" | /assign @user`)?
-- [ ] Worker pool: in-process threads vs separate processes?
-- [ ] Memory consolidation: LLM-based vs rule-based?
-- [ ] Kanban: persist column order per user?
+- [x] Worker pool: in-process threads vs separate processes? — **threads.** The
+  DB layer is one pooled SQLite connection behind an RLock, so N threads writing
+  concurrently serialise on that lock anyway; what genuinely parallelises is tool
+  execution, which releases the lock while it waits on the network. Converting to
+  asyncio later would risk deadlocking on the RLock for no throughput gain.
+- [x] Memory consolidation: LLM-based vs rule-based? — **rule-based.** A nightly
+  job must not depend on a model being reachable, and its writes must be
+  reproducible and auditable. Dedupe is token Jaccard against the same threshold
+  and same strict comparison the store uses; re-scoring reads two columns that
+  already exist. No access counter was added — scoring on bare presence would
+  re-apply forever and pin importance at its cap.
+- [ ] Kanban: persist column order per user? — still open; reordering within a
+  column was deliberately not built (see §2).
 
 ### Missions never advanced in production (found 2026-09-30)
 

@@ -165,6 +165,7 @@ const NAV: { v: View; icon: string; key: TKey; section?: TKey }[] = [
   { v: "files", icon: "folder", key: "nav.files" },
   { v: "terminal", icon: "term", key: "nav.terminal" },
   { v: "models", icon: "cpu", key: "nav.models" },
+  { v: "perf", icon: "wave", key: "nav.perf" },
   { v: "settings", icon: "gear", key: "nav.settings" },
 ];
 
