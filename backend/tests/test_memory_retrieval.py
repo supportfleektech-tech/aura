@@ -145,5 +145,66 @@ class MemoryRetrievalTest(unittest.TestCase):
         self.assertEqual(db.jload(row["embedding_json"]), hashed_embed("quartzfalcon observatory"))
 
 
+    def test_cosine_is_scale_invariant_for_unnormalised_vectors(self):
+        """`_cosine` must be a cosine, not a dot product.
+
+        Every other test in this suite runs with Ollama unreachable, so every
+        vector comes from `hashed_embed`, which L2-normalises — which is exactly
+        why a bare dot product passed for so long. Real `nomic-embed-text`
+        vectors have norm ~20, and there a dot product ranks by vector LENGTH:
+        a perfect match scores ~230 instead of 1.0, swamping the FTS term, and
+        the UI renders `relevance * 100` as a percentage ("23000%").
+        """
+        from app.memory import _cosine
+
+        # Same direction, wildly different lengths.
+        short = [1.0, 0.0, 0.0]
+        long = [20.0, 0.0, 0.0]
+        self.assertAlmostEqual(_cosine(short, short), 1.0, places=6)
+        self.assertAlmostEqual(_cosine(short, long), 1.0, places=6,
+                               msg="collinear vectors of different norms must both score 1.0")
+        self.assertLessEqual(abs(_cosine(short, long)), 1.0,
+                             "cosine must stay in [-1, 1] or the UI percentage is nonsense")
+
+        # Perpendicular and opposite stay at the boundaries.
+        self.assertAlmostEqual(_cosine([1.0, 0.0], [0.0, 5.0]), 0.0, places=6)
+        self.assertAlmostEqual(_cosine([1.0, 0.0], [-3.0, 0.0]), -1.0, places=6)
+
+        # A longer but non-collinear vector must not outrank a closer one.
+        near = [10.0, 1.0]
+        far_long = [30.0, 0.5]
+        self.assertGreater(_cosine(near, far_long), _cosine(near, [10.0, 0.0]) - 0.01,
+                           "sanity: aligned pair outranks the perpendicular one")
+
+        # Degenerate input must not raise.
+        self.assertEqual(_cosine([0.0, 0.0], [1.0, 1.0]), 0.0)
+        self.assertEqual(_cosine([], []), 0.0)
+
+    def test_search_relevance_stays_within_unit_range_for_real_scale_vectors(self):
+        """A whole-search check with unnormalised vectors, end to end.
+
+        Pins the user-visible symptom: `relevance` is rendered as a percentage
+        in the Memory and Home views, so it must never leave [0, 1].
+        """
+        import app.memory as _m
+        from app import db as _db
+
+        _db.init_db()
+        real_embedder = lambda text: [20.0 * (i + 1) for i in range(192)]  # norm ~ 2700
+        before = _db.qone("SELECT COUNT(*) c FROM memories") or {"c": 0}
+        _m.memory_engine.store("WQ12 anchoring note", "the WQ12 deployment anchors the shelf",
+                               "general", "semantic", "test", 0.7, 0.5)
+        hits = _m.memory_engine.search("WQ12", limit=10, embedder=real_embedder)
+        self.assertGreaterEqual(len(hits), 1)
+        for h in hits:
+            self.assertGreaterEqual(h["relevance"], -1.0, h["title"])
+            self.assertLessEqual(h["relevance"], 1.0,
+                                 f"{h['title']} scored {h['relevance']}: UI shows this as a %")
+        if len(hits) > 1:
+            self.assertLessEqual(len(hits), (before.get("c", 0)) + 12,
+                                 "score>0.05 must not admit the entire corpus")
+        _db.run("DELETE FROM memories WHERE source='test' AND title LIKE 'WQ12%'")
+
+
 if __name__ == "__main__":
     unittest.main()

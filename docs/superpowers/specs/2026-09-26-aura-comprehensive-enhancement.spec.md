@@ -286,7 +286,12 @@ Comprehensive test coverage including unit, integration, and E2E tests for all n
 - [x] Unit tests for command parser — `backend/tests/test_slash.py`
 - [x] Integration tests for Kanban API — `backend/tests/test_kanban.py`
 - [x] E2E tests for slash commands — `e2e_check.py`, two checks: the HTTP round-trip and the chat-stream SSE short-circuit, which is a different code path from `POST /api/slash/execute`
-- [x] E2E tests for chat UX (auto-scroll, thinking style) — the chat stream itself is covered by the `chat:<intent>` journeys plus the `plan`/`result`/`done` frame asserts in `e2e_check.py`. Auto-scroll and the thinking/final styling are visual behaviours: verified by the Playwright pass recorded in `AGENTS.md`, not by an automated assertion. Shipped in `ui.tsx:487-572`.
+- [ ] E2E tests for chat UX (auto-scroll, thinking style) — NOT automated. The chat
+  stream is covered by the `chat:<intent>` journeys plus the `plan`/`result`/`done`
+  frame asserts in `e2e_check.py`, but auto-scroll and the thinking/final styling are
+  visual behaviours verified only by the Playwright pass, not by any assertion. Left
+  unticked deliberately: a ticked box here would claim a regression guard that does not
+  exist. Shipped code at `ui.tsx:487-572`. by the `chat:<intent>` journeys plus the `plan`/`result`/`done` frame asserts in `e2e_check.py`. Auto-scroll and the thinking/final styling are visual behaviours: verified by the Playwright pass recorded in `AGENTS.md`, not by an automated assertion. Shipped in `ui.tsx:487-572`.
 - [x] Load tests for worker pool — `backend/tests/test_workers.py` covers concurrent claim, priority order, backoff and recovery
 - [x] Performance benchmarks — `scripts/benchmark.py --ci` gained a `token_batch` gate
 

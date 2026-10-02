@@ -80,7 +80,24 @@ def _embed(text: str, embedder=None) -> tuple[list[float], str]:
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))
+    """True cosine, i.e. both sides normalised.
+
+    This was a bare dot product, which is only a cosine when both vectors are
+    unit length. `hashed_embed` normalises, so the hashed path looked correct
+    and hid the bug — but `OllamaClient.embed` returns raw vectors with norm
+    ~20, so on any real deployment the score was a dot product: a *perfect*
+    match scored ~230 instead of 1.0, which swamped the FTS term and made
+    ranking effectively "longest vector wins". The UI then rendered
+    `relevance * 100` as a percentage, so a good result displayed as "23000%".
+
+    Unit tests cannot catch this, because they run with Ollama unreachable and
+    therefore always take the normalised hashed path.
+    """
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if not na or not nb:
+        return 0.0
+    return sum(x * y for x, y in zip(a, b)) / (na * nb)
 
 
 def sensitivity_scan(text: str) -> str:

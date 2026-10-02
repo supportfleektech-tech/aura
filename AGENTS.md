@@ -84,7 +84,7 @@ npm run dev  # :5173, proxies /api to :8000 (start backend first)
 ## Test Quirks
 
 - **Run single test**: `AURA_DATA_DIR="$(mktemp -d)" OLLAMA_BASE_URL=http://127.0.0.1:1 ../venv/bin/python -m unittest tests.test_aura.AuraTest.test_task_create_echoes_title`
-- **Full backend suite must be fully green (495 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
+- **Full backend suite must be fully green (498 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
 - Frontend: 238/238 Vitest tests pass (jsdom; `api.test.ts` runs in Node).
 - E2E script: 105/106. `prod_check`: 11/11. `pip-audit` and `npm audit --omit=dev`: clean.
 - Router eval: 299/299 (100%) when Ollama available.
