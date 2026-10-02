@@ -92,7 +92,10 @@ def main() -> int:
     results["chat_turn_builtin"] = bench("chat_turn_builtin", _turn)
 
     def _batch():
-        b = orch.TokenBatcher(0.0)
+        # A non-zero interval: at 0.0 every token takes the flush branch and the
+        # `now - self._last >= self._min` comparison this budget is meant to guard
+        # is never evaluated. 4ms matches the sse_batch_ms default's shape.
+        b = orch.TokenBatcher(0.004)
         for t in ("a", "b", "c", "d", "e", "f", "g", "h"):
             b.add(t)
         b.flush()

@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 _tmp = tempfile.mkdtemp(prefix="aura-cache-")
 os.environ["AURA_DB_PATH"] = os.path.join(_tmp, "test.db")
@@ -131,10 +132,15 @@ class CacheWiringTest(unittest.TestCase):
         db.init_db()
 
     def setUp(self):
-        from app import ollama_sync as osy
+        from app import db, ollama_sync as osy, prefs
 
         osy.invalidate_catalog()
         self.addCleanup(osy.invalidate_catalog)
+        # `set_default` writes a pref and the seeds write catalog rows; the suite
+        # shares one DB, so neither may leak into a later module.
+        chat_model = prefs.get("ollama_chat_model")
+        self.addCleanup(prefs.set_many, {"ollama_chat_model": chat_model})
+        self.addCleanup(db.run, "DELETE FROM ollama_models")
 
     def _tags(self, payload, calls):
         from unittest.mock import patch
@@ -169,6 +175,59 @@ class CacheWiringTest(unittest.TestCase):
         self.assertEqual(again["ok"], True)
         self.assertEqual([m["name"] for m in again["models"]], ["a:1"])
 
+    def test_a_nested_mutation_does_not_poison_the_cache(self):
+        """Reassigning a top-level key is the easy case and a shallow copy handles
+        it. The hazard is *inside* the envelope: `models` and each model dict are
+        shared with the cached value, so a nested edit is what actually poisons
+        the next reader. This is the test whose absence let the shallow copy ship.
+        """
+        from app import ollama_sync as osy
+
+        calls = []
+        with self._tags(_TAGS_A, calls):
+            got = osy.live_list()
+            got["models"][0]["name"] = "POISONED"       # nested dict edit
+            got["models"].append({"name": "GHOST"})      # nested list edit
+            again = osy.live_list()
+        self.assertEqual(len(calls), 1, "a nested edit must not force a re-probe either")
+        self.assertEqual([m["name"] for m in again["models"]], ["a:1"],
+                         "a nested edit by one caller reached the next reader")
+        self.assertEqual(again["models"][0]["family"], "fa",
+                         "the whole cached model dict was shared, not just the name")
+
+    def test_the_cache_is_keyed_on_the_ollama_base_url(self):
+        """Pointing `ollama_base_url` at another machine must not serve the
+        previous one's inventory and reachability for a full TTL — and
+        `status()` reports the *new* base_url live, so one payload would otherwise
+        describe two machines."""
+        from app import ollama_sync as osy
+        from app import prefs
+
+        real_get = prefs.get
+        box = {"base": "http://box-a:11434"}
+
+        def fake_get(key):
+            return box["base"] if key == "ollama_base_url" else real_get(key)
+
+        calls = []
+        with self._tags(_TAGS_A, calls):
+            with patch("app.prefs.get", side_effect=fake_get):
+                first = osy.live_list()
+                box["base"] = "http://box-b:11434"
+                second = osy.live_list()
+        self.assertEqual(first["base_url"], "http://box-a:11434")
+        self.assertEqual(len(calls), 2,
+                         "changing ollama_base_url must be a cache miss, not a hit on box-a")
+        self.assertEqual(second["base_url"], "http://box-b:11434")
+        # …and back to box-a: its own entry is untouched and still a valid hit, so
+        # the key scopes the entries instead of the cache simply being flushed.
+        with self._tags(_TAGS_B, calls):
+            with patch("app.prefs.get", side_effect=fake_get):
+                box["base"] = "http://box-a:11434"
+                third = osy.live_list()
+        self.assertEqual(len(calls), 2, "box-a's entry should still have been there")
+        self.assertEqual(third["base_url"], "http://box-a:11434")
+
     def test_sync_bypasses_and_invalidates_the_cache(self):
         """A refresh that reads a cached catalog stamps a fresh `synced_at` onto
         data nobody re-read — the panel would claim 'synced just now'."""
@@ -184,23 +243,65 @@ class CacheWiringTest(unittest.TestCase):
                          "sync must re-probe, not replay the cached catalog")
         db.run("DELETE FROM ollama_models")
 
-    def test_set_default_validates_against_a_fresh_probe(self):
-        """A stale catalog must not be able to accept a model Ollama dropped, nor
-        reject one it just gained."""
-        from app import db, ollama_sync as osy
+    def _seed_db_catalog(self, names):
+        from app import db
 
-        db.run("DELETE FROM ollama_models")  # force the live-lookup path
-        try:
-            calls = []
-            with self._tags(_TAGS_A, calls):
-                osy.live_list()  # warm the cache with the OLD catalog
-            with self._tags(_TAGS_B, calls):
-                self.assertTrue(osy.set_default("chat", "c:1")["ok"],
-                                "a freshly pulled model must validate against a live probe")
-                self.assertEqual(len(calls), 2, "set_default must not read the cached catalog")
-                self.assertRaises(ValueError, osy.set_default, "chat", "a:1")
-        finally:
-            db.run("DELETE FROM ollama_models")
+        db.run("DELETE FROM ollama_models")
+        for n in names:
+            db.run(
+                "INSERT OR REPLACE INTO ollama_models (name,family,size_bytes,param_size,"
+                "quantization,modified_at,caps_json,synced_at) VALUES (?,?,?,?,?,?,?,?)",
+                (n, "fam", 1, "1B", "", "", '["chat"]', "2026-01-01T00:00:00Z"),
+            )
+
+    def test_set_default_revalidates_against_a_live_probe_when_ollama_answers(self):
+        """The DB catalog is not the authority. Proving it needs the catalog to be
+        *populated and wrong* in both directions — the old code probed only when it
+        was empty, so with rows present it accepted a model Ollama had dropped and
+        rejected one it had just gained."""
+        from app import ollama_sync as osy
+
+        self._seed_db_catalog(["a:1"])
+        calls = []
+        with self._tags(_TAGS_B, calls):  # Ollama now has b:1 and c:1, not a:1
+            self.assertTrue(osy.set_default("chat", "c:1")["ok"],
+                            "a freshly pulled model must validate against a live probe")
+            with self.assertRaises(ValueError):
+                osy.set_default("chat", "a:1")
+        self.assertEqual(len(calls), 2, "set_default must probe once per call, never read the cache")
+
+    def test_set_default_falls_back_to_the_db_catalog_only_when_ollama_is_down(self):
+        """The one case the DB catalog is still trusted, and it is a deliberate
+        trade: refusing here would make the model room unusable during an outage.
+        Documented in `set_default` as staleness, not as a guarantee."""
+        from app import ollama_sync as osy
+
+        self._seed_db_catalog(["a:1"])
+
+        def boom(*a, **k):
+            raise ConnectionError("connection refused")
+
+        with patch("app.ollama_sync.httpx.get", side_effect=boom):
+            self.assertTrue(osy.set_default("chat", "a:1")["ok"],
+                            "offline: the last synced catalog is the only answer available")
+            self.assertRaises(ValueError, osy.set_default, "chat", "never-synced:1")
+
+    def test_set_default_refuses_when_there_is_nothing_to_validate_against(self):
+        from app import ollama_sync as osy
+
+        self._seed_db_catalog([])
+        self.assertRaises(ValueError, osy.set_default, "chat", "a:1")
+
+    def test_invalidate_catalog_also_drops_the_health_probe_cache(self):
+        """`Local LFM` and `Model Room` are two rows of one /api/health payload fed
+        by two caches; a catalog rewrite that cleared only one of them could show
+        `Local LFM: online` next to `Model Room: degraded` for a full TTL."""
+        from app import health, ollama_sync as osy
+
+        health._probe_cache.set("ollama_healthy:http://x", (True, "note"))
+        health._probe_cache.set("vector", ("online", "chromadb available"))
+        osy.invalidate_catalog()
+        self.assertEqual(health._probe_cache.stats()["entries"], 0)
 
     def test_cache_ttl_zero_disables_the_catalog_cache(self):
         from unittest.mock import patch
@@ -277,6 +378,29 @@ class CacheWiringTest(unittest.TestCase):
         self.assertEqual(first_v, second_v)
         self.assertIn("7 indexed", first_v[1])
         health._probe_cache.clear()
+
+    def test_system_status_is_never_cached(self):
+        """The single most important prohibition in this task.
+
+        `system_status()` carries live DB counts, disk free and uptime — a stale
+        "disk 98% full" is a lie. Wrapping it in a cache decorator leaves every
+        other test in this file green, which is precisely the failure mode the
+        brief exists to prevent. So this test is behavioural rather than
+        structural: change the DB underneath and the *second* call must see it.
+        """
+        from app import db, health
+
+        db.run("DELETE FROM runs WHERE trace_id='cache-probe'")
+        before = health.system_status()["metrics"]["runs_24h"]
+        db.run("INSERT INTO runs (trace_id, session_id, duration_ms) VALUES ('cache-probe', '', 1)")
+        try:
+            after = health.system_status()["metrics"]["runs_24h"]
+            self.assertEqual(after, before + 1,
+                             "system_status() served a cached payload: the DB changed "
+                             "underneath it and the second call did not notice")
+        finally:
+            db.run("DELETE FROM runs WHERE trace_id='cache-probe'")
+            health._probe_cache.clear()
 
 
 if __name__ == "__main__":

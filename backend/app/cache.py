@@ -16,9 +16,13 @@ let it point at a model Ollama no longer has).
 Two rules for call sites:
 
 * `get()` returning a hit hands back the *same* object every time. Copy it
-  before mutating, or the next reader sees your edit.
+  before mutating, or the next reader sees your edit — and copy *deeply*, not
+  `dict(...)`: a shallow copy shares every nested list and dict with the cached
+  value, so `hit["models"][0]["name"] = …` still poisons the next reader.
 * Cache only what a *reader* asks for. An explicit refresh (a sync, a validate)
-  must bypass the cache or it silently stops refreshing.
+  must bypass the cache or it silently stops refreshing. Key on every input that
+  can change the answer (e.g. a base URL read from Settings), so a settings
+  change is a miss rather than a stale hit.
 """
 from __future__ import annotations
 
@@ -95,13 +99,6 @@ class TTLCache:
             return {"entries": len(self._data), "hits": self._hits, "misses": self._misses,
                     "hit_rate": round(self._hits / total, 3) if total else 0.0,
                     "evictions": self._evictions, "ttl_s": self._ttl}
-
-
-_default = TTLCache()
-
-
-def default_cache() -> TTLCache:
-    return _default
 
 
 def tuned_ttl(default: float = DEFAULT_TTL_S) -> float:

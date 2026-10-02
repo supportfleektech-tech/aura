@@ -23,6 +23,24 @@ class _StreamHarness(unittest.TestCase):
         self.stack.enter_context(patch("app.compact.maybe_compact"))
         self.stack.enter_context(patch.object(orchestrator.memory_engine, "observe", return_value=[]))
 
+    def batch_ms(self, ms):
+        """Pin `sse_batch_ms` for this test.
+
+        The batching assertions below used to depend on the machine's speed: three
+        tokens had to land inside one 40ms window for them to coalesce, so a
+        loaded box could turn a correct implementation into a red test (and a
+        slow one into a green test). Pinning the interval makes the window a
+        fact of the test rather than a race.
+        """
+        from app import prefs
+
+        real_get = prefs.get
+
+        def fake_get(key):
+            return ms if key == "sse_batch_ms" else real_get(key)
+
+        self.stack.enter_context(patch("app.prefs.get", side_effect=fake_get))
+
     def events(self, stream):
         # Create an iterator with a close method for the chat() method
         class MockStream:
@@ -129,17 +147,26 @@ class TokenBatchingTest(unittest.TestCase):
 
     def test_concatenated_batches_equal_the_original_text(self):
         from app.orchestrator import TokenBatcher
-        b = TokenBatcher(min_interval_s=0.0)
+        b = TokenBatcher(min_interval_s=60.0)  # a real interval, not the 0.0 shortcut
         toks = ["Hello", ",", " ", "world", "!"]
         out = [b.add(t) for t in toks]
         out.append(b.flush())
         self.assertEqual("".join(p for p in out if p), "".join(toks))
+        self.assertEqual(len([p for p in out if p]), 2,
+                         "5 tokens inside one interval must coalesce — if this fails the "
+                         "batcher is ignoring _min and the equality above proves nothing")
 
     def test_zero_interval_emits_one_payload_per_token(self):
         """sse_batch_ms=0 must restore the unbatched behaviour exactly."""
         from app.orchestrator import TokenBatcher
         b = TokenBatcher(min_interval_s=0.0)
         self.assertEqual([b.add(t) for t in ("a", "b")], ["a", "b"])
+        # …and the same tokens under a real interval coalesce, so this pair shows
+        # `_min` is read rather than ignored: a batcher that ignored it would pass
+        # the first half of this test on its own.
+        slow = TokenBatcher(min_interval_s=60.0)
+        self.assertEqual([slow.add(t) for t in ("a", "b")], ["a", ""])
+        self.assertEqual(slow.flush(), "b")
 
 
 class StreamedTokensAreNeverDroppedTest(_StreamHarness):
@@ -147,6 +174,8 @@ class StreamedTokensAreNeverDroppedTest(_StreamHarness):
     model produced — including when the stream dies mid-answer."""
 
     def test_a_stream_that_dies_mid_answer_still_flushes_its_partial_batch(self):
+        self.batch_ms(5000)  # "bb" is guaranteed to still be buffered at the crash
+
         def stream(*args, **kwargs):
             yield "aa"
             yield "bb"  # these two sit inside the batch interval
@@ -159,6 +188,8 @@ class StreamedTokensAreNeverDroppedTest(_StreamHarness):
     def test_fast_stream_collapses_into_one_event(self):
         """The point of the feature: a burst of tokens inside one interval
         becomes one frame, and nothing is lost doing it."""
+        self.batch_ms(5000)  # the whole burst is inside one window by construction
+
         def stream(*args, **kwargs):
             for tok in ("one ", "two ", "three"):
                 yield tok
@@ -172,16 +203,31 @@ class StreamedTokensAreNeverDroppedTest(_StreamHarness):
 
     def test_slow_stream_still_emits_each_token_as_it_arrives(self):
         """Batching must never delay a token that has already waited longer than
-        the interval — that is what a typewriter effect needs to look continuous."""
+        the interval — that is what a typewriter effect needs to look continuous.
+
+        The second half is the non-vacuity check: the same three tokens arriving
+        instantly, under a long pinned interval, *do* collapse. Without it this
+        test would also pass against a batcher that ignored `_min` and emitted
+        every token on arrival.
+        """
+        self.batch_ms(5)  # pinned well under the 60ms gap below
 
         def stream(*args, **kwargs):
             for tok in ("one ", "two ", "three"):
                 yield tok
                 time.sleep(0.06)
 
-        events = self.events(stream)
-        payloads = [d["text"] for e, d in events if e == "token"]
+        payloads = [d["text"] for e, d in self.events(stream) if e == "token"]
         self.assertEqual(payloads, ["one ", "two ", "three"])
+
+        def burst(*args, **kwargs):
+            for tok in ("one ", "two ", "three"):
+                yield tok
+
+        self.batch_ms(5000)
+        collapsed = [d["text"] for e, d in self.events(burst) if e == "token"]
+        self.assertEqual(collapsed, ["one ", "two three"],
+                         "the interval was ignored — the test above proves nothing")
 
 
 if __name__ == "__main__":

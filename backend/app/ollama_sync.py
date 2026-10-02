@@ -11,6 +11,7 @@ Everything degrades honestly: unreachable → {reachable: False, ...}.
 """
 from __future__ import annotations
 
+import copy
 import json
 import time
 
@@ -113,15 +114,37 @@ def _live_list_uncached(timeout: float = 4.0) -> dict:
 # and the model room, so a short read-through cache removes a network round trip
 # per poll. `_FAIL_TTL_S` keeps a *failure* out of the cache almost immediately:
 # Ollama restarting has to become visible in seconds, not after a full TTL.
-_catalog_cache = TTLCache(max_entries=4, ttl_s=DEFAULT_TTL_S)
+#
+# The key is scoped to the base URL. Keying on the constant "tags" would let a
+# Settings change of `ollama_base_url` serve the *previous* machine's inventory
+# and reachability for up to a full TTL while `status()`'s own `base_url` field
+# (read live from prefs) already reported the new one — /api/ollama/models and the
+# Model Room row would then describe two different machines in one payload. With
+# the base in the key the swap is a plain miss, with no cross-module invalidation
+# to keep in sync.
+_catalog_cache = TTLCache(max_entries=8, ttl_s=DEFAULT_TTL_S)
 _FAIL_TTL_S = 2.0
 _TAGS = "tags"
 
 
 def invalidate_catalog() -> None:
     """Drop the cached probe. Called whenever the catalog is rewritten, so an
-    explicit refresh always refreshes."""
+    explicit refresh always refreshes.
+
+    Also drops the health probe cache: `Local LFM` and `Model Room` are two rows
+    of one /api/health payload fed by two independent caches, and a rewrite that
+    only invalidated one of them could leave `Local LFM: online` sitting beside
+    `Model Room: degraded` for a full TTL after a successful sync. Imported
+    lazily — `health` imports this module, so a top-level import would be
+    circular.
+    """
     _catalog_cache.clear()
+    try:
+        from . import health
+
+        health._probe_cache.clear()
+    except Exception:
+        pass  # a cache-clearing helper must never be the thing that raises
 
 
 def live_list(timeout: float = 4.0, use_cache: bool = True) -> dict:
@@ -132,19 +155,28 @@ def live_list(timeout: float = 4.0, use_cache: bool = True) -> dict:
     validates a model name against the catalog) both take it, so no validation
     can ever be satisfied by a stale answer.
 
+    The cached value is a deep copy in both directions. `dict(...)` copies only
+    the envelope: the `models` list and every model dict inside it are still the
+    same objects, so a caller doing `got["models"][0]["name"] = ...` — or simply
+    `got["models"].append(...)` — edits the object the next reader is handed.
+    Copying deeply on store *and* on read makes the cache unreachable to caller
+    mutation, which is the only property the shallow copy pretended to give.
+
     The TTL comes from Settings (`cache_ttl_s`) and is read per call, not baked
     in, so retuning takes effect without a restart; 0 disables caching.
     """
     if not use_cache:
         return _live_list_uncached(timeout)
     _catalog_cache.set_ttl(tuned_ttl())
-    hit = _catalog_cache.get(_TAGS)
+    hit_key = f"{_TAGS}:{_base()}"
+    hit = _catalog_cache.get(hit_key)
     if hit is not None:
-        return dict(hit)  # copy: the cached envelope must not be mutable by a caller
+        return copy.deepcopy(hit)
     out = _live_list_uncached(timeout)
-    # Store a copy: the value handed to a caller on a miss must never be the
-    # object a later reader gets back, or one caller's edit poisons the cache.
-    _catalog_cache.set(_TAGS, dict(out), ttl_s=_FAIL_TTL_S if not out.get("ok") else None)
+    # Store a deep copy: the value handed to a caller must never be reachable
+    # from the object a later reader gets back.
+    _catalog_cache.set(hit_key, copy.deepcopy(out),
+                       ttl_s=_FAIL_TTL_S if not out.get("ok") else None)
     return out
 
 
@@ -217,15 +249,26 @@ def set_default(role: str, name: str) -> dict:
     if not name:
         raise ValueError("model name required")
     known = {m["name"] for m in cached()}
-    if not known:  # cache empty — try live before trusting the name
-        # Uncached on purpose: this is a validation, and a stale catalog must not
-        # be able to accept a model Ollama no longer has (or reject one it does).
-        live = _live_list_uncached(timeout=2.5)
-        if live.get("ok"):
-            known = {m["name"] for m in live["models"]}
-    if not known:
+    # Uncached on purpose: this is a validation, and it must see the machine as it
+    # is *now*. Probing only when the DB catalog is empty was the old behaviour and
+    # it was wrong in both directions — a model dropped from Ollama stayed
+    # acceptable for as long as the row survived in SQLite, and a freshly pulled
+    # model was rejected until a sync ran. Whenever Ollama answers, its answer is
+    # the authority and the DB catalog is only the fallback.
+    live = _live_list_uncached(timeout=2.5)
+    if live.get("ok"):
+        known = {m["name"] for m in live["models"]}
+    elif not known:
         raise ValueError("cannot verify the model: Ollama is unreachable and no catalog is "
                          "synced — start Ollama and sync first")
+    # DELIBERATE TRADE, not a guarantee: when Ollama is unreachable and a catalog
+    # *is* synced, the DB rows are accepted as-is. That answer can be as old as
+    # the last successful sync — at least `ollama_sync_interval_min` (30 min by
+    # default), and unbounded when auto-sync is off or syncs keep failing — so a
+    # model removed while Ollama was down can still be pointed at. Refusing
+    # instead would make the whole model room unusable during an outage, which is
+    # a worse failure than a stale acceptance on a path that only ever runs
+    # offline.
     if name not in known:
         raise ValueError(f"{name} not in your local catalog ({', '.join(sorted(known)[:6])}"
                          f"{'…' if len(known) > 6 else ''}) — I only point at models that exist")

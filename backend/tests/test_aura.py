@@ -3765,6 +3765,12 @@ class MachineRoomTest(unittest.TestCase):
 
         def _boom(*a, **k):
             raise ConnectionError("connection refused")
+        # The DB catalog is what must survive an outage, not a 2s-lived probe
+        # result. test_a/test_a2 leave the read-through cache warm (test_a's
+        # unpatched GET /api/ollama/status populates it), so without this the
+        # assertion below would be reading that entry back rather than testing
+        # reachability at all.
+        _osy.invalidate_catalog()
         with _patch("app.ollama_sync.httpx.get", side_effect=_boom):
             s = _osy.list_models()
             sync_err = _osy.sync()

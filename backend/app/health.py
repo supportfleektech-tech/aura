@@ -27,7 +27,7 @@ _STARTED = time.time()
 #   * `_probe_vector` runs a `COUNT(*) ... WHERE embedding_json != ''` full scan
 #     per poll. It can only ever return "online" — both branches do — so nothing
 #     about it can go stale; only the "N indexed" detail can.
-_probe_cache = TTLCache(max_entries=2, ttl_s=DEFAULT_TTL_S)
+_probe_cache = TTLCache(max_entries=4, ttl_s=DEFAULT_TTL_S)
 
 
 def _probe_db() -> tuple[str, str, int]:
@@ -44,10 +44,15 @@ def _probe_lfm() -> tuple[str, str, int]:
     from .inference import router
 
     _probe_cache.set_ttl(tuned_ttl())
-    leg = _probe_cache.get("ollama_healthy")
+    # Keyed on the base URL for the same reason `ollama_sync.live_list` is: a
+    # Settings change of `ollama_base_url` must not keep serving the previous
+    # machine's verdict. This is the one other cache key in the module that was
+    # input-blind; `vector` reads no mutable setting, only a row count.
+    key = f"ollama_healthy:{router.ollama.base}"
+    leg = _probe_cache.get(key)
     if leg is None:
         leg = router.ollama.healthy()  # the network call — the expensive part
-        _probe_cache.set("ollama_healthy", leg)
+        _probe_cache.set(key, leg)
     ok, note = leg
     cloud = router.probe()["cloud"]
     if cloud["configured"]:
