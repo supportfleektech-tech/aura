@@ -12,12 +12,24 @@ from __future__ import annotations
 import datetime
 import json
 import time
+import os
 import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
 
 BASE = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:8000"
+
+# Two checks below need the *backend's* view of the world, not this process's:
+# one starts an HTTP server here and has the backend fetch it, the other writes
+# a file into a directory the backend watches. Both are 127.0.0.1/host paths by
+# default, which is wrong when the backend is containerised — there 127.0.0.1 is
+# the container itself and its filesystem is not ours. Set both when it is:
+#   AURA_E2E_HOST         hostname the backend uses to reach this process
+#                         ("host.docker.internal"; needs host-gateway in compose)
+#   AURA_E2E_WATCH_DIR    host path bind-mounted to the backend's watch dir
+HOST_REACH = os.environ.get("AURA_E2E_HOST", "127.0.0.1").strip() or "127.0.0.1"
+WATCH_HOST_DIR = os.environ.get("AURA_E2E_WATCH_DIR", "").strip()
 PASS, FAIL, WARN = [], [], []
 
 
@@ -1208,11 +1220,17 @@ def _t_feeds_e2e():
         def log_message(self, *a):
             pass
 
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    # A backend in a container reaches this host as the docker bridge gateway
+    # (172.17.0.1), not as loopback, so binding 127.0.0.1 is unreachable for it.
+    # Widen only when AURA_E2E_HOST actually names a non-loopback host — the
+    # payload is a static RSS document and the server lives for milliseconds,
+    # but there is no reason to expose it unless the run asked for it.
+    bind = "127.0.0.1" if HOST_REACH in ("127.0.0.1", "localhost", "::1") else "0.0.0.0"
+    srv = ThreadingHTTPServer((bind, 0), H)
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        url = f"http://127.0.0.1:{port}/rss"
+        url = f"http://{HOST_REACH}:{port}/rss"
         s, d, _ = req("POST", "/api/feeds", {"url": url})
         assert s == 200 and d.get("items", 0) >= 1, (s, d)
         fid = d["id"]
@@ -1324,9 +1342,10 @@ def _t_watch_e2e():
     s, w, _ = req("GET", "/api/watch")
     inbox = (w.get("paths") or [w.get("default_dir")])[0]
     assert s == 200 and inbox, w
-    _os.makedirs(inbox, exist_ok=True)
+    write_dir = WATCH_HOST_DIR or inbox
+    _os.makedirs(write_dir, exist_ok=True)
     name = f"e2e-watch-{int(_tm.time())}.txt"
-    fpath = _os.path.join(inbox, name)
+    fpath = _os.path.join(write_dir, name)
     with open(fpath, "w") as fh:
         fh.write(f"e2e watch probe {name}\n")
     try:

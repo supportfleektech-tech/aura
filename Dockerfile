@@ -16,6 +16,13 @@ ADD https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VE
 RUN tar -xzf /tmp/litestream.tgz -C /usr/local/bin litestream && rm /tmp/litestream.tgz
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# edge-tts only, deliberately not all of requirements-voice.txt. voice.engines()
+# imports edge_tts independently of the others, and edge is the one engine that
+# needs no model download, so this makes a working TTS path for a few MB. The
+# rest (faster-whisper, piper, kokoro-onnx) drag in cTranslate2/onnxruntime and
+# hundreds of MB of weights, which is not a default for a container image —
+# install those where the local voice stack is actually wanted.
+RUN pip install --no-cache-dir "edge-tts>=7.0"
 COPY backend/app ./app
 COPY litestream.yml ./litestream.yml
 COPY entrypoint.sh ./entrypoint.sh

@@ -5,6 +5,14 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - aura-data:/data
+      # Bind-mount a host directory onto the backend's watch dir. e2e_check
+      # writes its probe file from the host, so without this the host and the
+      # container disagree about where the watch dir lives. Override the host
+      # side with AURA_E2E_DIR (keep the container side as /data/inbox).
+      - ${AURA_E2E_DIR:-/tmp/aura-e2e-inbox}:/data/inbox
+    # Lets the backend reach an HTTP server started by the host-side test run.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       AURA_DATA_DIR: /data
       AURA_USER_NAME: Antony
