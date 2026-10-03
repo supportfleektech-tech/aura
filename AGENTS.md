@@ -77,6 +77,11 @@ npm run dev  # :5173, proxies /api to :8000 (start backend first)
 - `run_turn` is a **generator of SSE strings** (`event: …\ndata: …`), consumed by `main.py` and `vloop.py`. It closes the upstream LLM stream in a `finally`, so a client hang-up releases the provider connection.
 - **Response shapes are a contract with three consumers**: the frontend `api.ts` types, `orchestrator`'s memory harvest, and `scripts/e2e_check.py`. A route returning `{tasks: …}` where the rest of the system reads `{overdue: …}` silently empties the list everywhere — this has already happened once. When changing a response, grep for the old key first.
 - **Every registered route must be reachable and match its typed client.** `POST /projects/{id}/milestones` had a handler function but no decorator, so the frontend call 404'd. `emit_gateway` returned a dict while its caller read `.event_id`, 500-ing `/api/gateway/simulate`. Check both ends.
+- **The image ships `edge-tts` but not the rest of `requirements-voice.txt`.**
+  `Dockerfile` installs it alone: `voice.engines()` imports it independently and it
+  needs no model download, whereas faster-whisper/piper/kokoro pull in cTranslate2,
+  onnxruntime and hundreds of MB of weights. Without it `/api/voice/speak` 503s.
+  Install the full stack explicitly where the local voice engines are wanted.
 - **Plugins are discovered from `Path(__file__).parent / "plugins"`**, never a CWD-relative path — the relative form loaded zero plugins whenever the server was started from anywhere but `backend/`.
 - `frontend/dist` is located by probing both the source-checkout and container layouts (`_resolve_dist()` in `main.py`), or via `AURA_FRONTEND_DIST`. A single `parent.parent.parent` assumption silently produces an image with no UI.
 - Undefined-name bugs are invisible until a rare branch runs. After touching a module, re-run the AST check for unbound names (it has already caught `missions.py` and `orchestrator.py` misses that no test covered directly).
@@ -84,11 +89,11 @@ npm run dev  # :5173, proxies /api to :8000 (start backend first)
 ## Test Quirks
 
 - **Run single test**: `AURA_DATA_DIR="$(mktemp -d)" OLLAMA_BASE_URL=http://127.0.0.1:1 ../venv/bin/python -m unittest tests.test_aura.AuraTest.test_task_create_echoes_title`
-- **Full backend suite must be fully green (502 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
-- Frontend: 238/238 Vitest tests pass (jsdom; `api.test.ts` runs in Node).
-- E2E script: 105/106. `prod_check`: 11/11. `pip-audit` and `npm audit --omit=dev`: clean.
+- **Full backend suite must be fully green (517 tests).** A "pre-existing failure" excuse is not acceptable — if a test fails, the behaviour is unimplemented, not the test optional. Compare against a clean `git worktree` at the target commit before calling anything a regression. Skips drop from 2 to 1 once `requirements-voice.txt` (edge-tts) is installed.
+- Frontend: 239/239 Vitest tests pass (jsdom; `api.test.ts` runs in Node).
+- E2E script: 106/106 both host-local and containerised. `prod_check`: 11/11. `pip-audit` and `npm audit --omit=dev`: clean.
 - Router eval: 299/299 (100%) when Ollama available.
-- **Agent eval: needs re-running.** `read_tasks_without_mutation` asserts a read-only turn journals nothing; fact extraction used to store derived facts from R0 tools, which journaled a write. Facts now come from write tools only (`facts._is_write_tool`, gated on the R0/R1 risk boundary), so the cause is gone — but the case has not been re-run, since it needs a real `llama3.1:8b`. Verify before trusting the 33/33 figure below.
+- **Agent eval: verified 33/33 (100%).** `read_tasks_without_mutation` — which asserts a read-only turn journals nothing — now passes. It used to fail because fact extraction stored derived facts from R0 tools, journaling a write; facts now come from write tools only (`facts._is_write_tool`, gated on the R0/R1 risk boundary). Re-run it after touching fact extraction or tool risk classes.
 - Do **not** run `backend -m unittest` and `npx vitest` concurrently — both saturate the box and heavy component renders hit their timeout. Run them sequentially.
 
 ## Quick Verification Checklist
@@ -119,6 +124,25 @@ AURA_DATA_DIR="$(mktemp -d)" venv/bin/python -m uvicorn app.main:app --host 127.
 venv/bin/python scripts/e2e_check.py
 ```
 
+# E2E against the CONTAINER stack (compose maps 127.0.0.1:8000, same as default)
+mkdir -p /tmp/aura-e2e-inbox
+AURA_E2E_DIR=/tmp/aura-e2e-inbox docker compose up -d --build
+AURA_E2E_HOST=host.docker.internal AURA_E2E_WATCH_DIR=/tmp/aura-e2e-inbox \
+  venv/bin/python scripts/e2e_check.py
+```
+
+- **`e2e_check.py` is not container-aware by default.** It starts its RSS server on
+  loopback and writes its watch probe to a host path, so a containerised backend
+  fails both with a misleading `items: 0` / `PermissionError: /data`. Set
+  `AURA_E2E_HOST` (how the backend reaches this host; needs the
+  `host.docker.internal` alias compose already adds) and `AURA_E2E_WATCH_DIR` (host
+  side of the `/data/inbox` bind mount). Unset, behaviour is unchanged and the
+  host-local run still passes 106/106.
+- **Repeated e2e runs against a persistent volume trip the rate limiter** and
+  surface as spurious `429`s in unrelated tests. Use `docker compose down -v` and a
+  fresh volume between runs; a burst of 429s means state, not a regression.
+- **`pkill -f "uvicorn app.main:app"` kills your own shell.** The pattern matches the
+  invoking `zsh -c` command line. Use `pkill -f "[u]vicorn"` or kill by PID.
 > **Check free disk before e2e/prod runs.** A full disk surfaces as
 > `500 Internal Server Error` on file upload, which looks exactly like a code bug
 > but is not one.
