@@ -21,7 +21,7 @@ const SETTINGS = {
   secrets: {}, sources: {},
 };
 
-function mockApi(onboarded: boolean, calls: { url: string; method: string; body: string }[]) {
+function mockApi(onboarded: boolean, calls: { url: string; method: string; body: string }[], delayMs = 0) {
   const fx: Record<string, unknown> = {
     "/api/me": { name: "T", role: "R", location: "L", version: "1.15.0" },
     "/api/dashboard": DASH,
@@ -32,6 +32,7 @@ function mockApi(onboarded: boolean, calls: { url: string; method: string; body:
   };
   vi.stubGlobal("fetch", (async (url: string, init?: { method?: string; body?: string }) => {
     calls.push({ url, method: init?.method || "GET", body: init?.body || "" });
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
     const body = fx[url] ?? {};
     return { ok: true, json: async () => body, text: async () => JSON.stringify(body) };
   }) as unknown as typeof fetch);
@@ -67,16 +68,39 @@ describe("onboarding", () => {
     unmount();
   });
 
+  it("keeps Continue inert until the identity fields have loaded", async () => {
+    // The name field is seeded from /api/me. While that is in flight the wizard
+    // used to accept a click, then throw "Name is required" and silently refuse
+    // to advance — telling a user with a name that they have none.
+    const calls: { url: string; method: string; body: string }[] = [];
+    mockApi(false, calls, 120); // keep /api/me in flight long enough to observe
+    const { unmount } = wrap(<OnboardingWizard onDone={() => undefined} />);
+    expect(await screen.findByText("Who are you?")).toBeInTheDocument();
+    const early = screen.getByText("Continue").closest("button") as HTMLButtonElement;
+    expect(early.disabled).toBe(true);
+    expect((document.querySelector('input[placeholder="Antony"]') as HTMLInputElement).value).toBe("");
+    await screen.findByDisplayValue("T");
+    expect((screen.getByText("Continue").closest("button") as HTMLButtonElement).disabled).toBe(false);
+    unmount();
+  });
+
   it("full walk sets onboarded=true and finishes", async () => {
     const calls: { url: string; method: string; body: string }[] = [];
     mockApi(false, calls);
     const onDone = vi.fn();
     const { unmount } = wrap(<OnboardingWizard onDone={onDone} />);
+    // Wait for the identity fields to be seeded from /api/me first. They are
+    // empty until that lands, and Continue is inert while they load, so clicking
+    // before it resolves made the walk stall on step 1 — which is exactly what CI
+    // hit, since its fetches are slower than the local ones.
+    await screen.findByDisplayValue("T");
     const titles = ["Who are you?", "Choose your domains", "Memory mode", "Intelligence",
       "Connect platforms", "Notifications", "First goals & projects"];
     for (const title of titles) {
       expect(await screen.findByText(title)).toBeInTheDocument();
-      fireEvent.click(screen.getByText("Continue"));
+      const next = screen.getByText("Continue").closest("button");
+      expect(next).not.toBeDisabled();
+      fireEvent.click(next as HTMLButtonElement);
     }
     expect(await screen.findByText("Ask AURA anything.")).toBeInTheDocument();
     const fin = calls.filter((c) => c.url === "/api/settings" && c.method === "PATCH");

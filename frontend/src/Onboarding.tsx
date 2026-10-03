@@ -103,6 +103,13 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
     }
   };
 
+  // Step 1 validates `name`, which is seeded from api.me once it lands. While
+  // that fetch is in flight the field is empty, so an early click threw "Name is
+  // required" and the step silently refused to advance — the user sees a toast
+  // claiming they have no name when they plainly do. Keep Next inert until the
+  // identity fields are populated.
+  const identityLoading = step === 0 && meQ.loading;
+
   const nexts: (() => void)[] = [
     () => void save(async () => {
       if (!name.trim()) throw new Error("Name is required");
@@ -219,7 +226,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
           {!done && (
             <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "space-between" }}>
               <Btn small onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0 || busy}>{t("ob.back")}</Btn>
-              <Btn small kind="violet" onClick={nexts[step]} disabled={busy}>{t("ob.next")}</Btn>
+              <Btn small kind="violet" onClick={nexts[step]} disabled={busy || identityLoading}>{t("ob.next")}</Btn>
             </div>
           )}
           {done && (
