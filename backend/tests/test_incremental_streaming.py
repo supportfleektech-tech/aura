@@ -141,6 +141,22 @@ class TokenBatchingTest(unittest.TestCase):
         self.assertEqual(b.flush(), "y")
         self.assertEqual(b.flush(), "", "flush must be idempotent")
 
+    def test_first_token_flushes_even_when_the_host_clock_is_young(self):
+        """Regression: a fresh host must not swallow the first token.
+
+        time.monotonic() counts from boot. With a 0.0 "never flushed" sentinel, a
+        host younger than min_interval_s computes the last flush as *now*, so the
+        first token waited out the entire interval. This is not test-only: it is
+        the time-to-first-pixel path, and it failed CI on a freshly booted runner
+        where a 60s batcher emitted nothing at all.
+        """
+        from unittest import mock
+        from app.orchestrator import TokenBatcher
+        with mock.patch("app.orchestrator.time.monotonic", return_value=3.0):
+            b = TokenBatcher(min_interval_s=60.0)
+            self.assertEqual(b.add("x"), "x")
+            self.assertEqual(b.add("y"), "", "but the interval still applies after")
+
     def test_flush_on_empty_buffer_is_empty(self):
         from app.orchestrator import TokenBatcher
         self.assertEqual(TokenBatcher().flush(), "")

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """AURA OS migration guard — blocks destructive schema changes in CI.
 
-Compares backend/app/schema.sql between two git refs (default: origin/main
+Compares backend/app/schema.sql between two git refs (default: the
+remote's default branch)
 vs HEAD) and fails on:
   - dropped tables (CREATE TABLE present in base, gone in head)
   - dropped columns (column in base table, gone in head table)
@@ -129,10 +130,39 @@ def self_test() -> int:
     return 1 if fails else 0
 
 
+def _default_base() -> str:
+    """Pick the branch to diff against instead of assuming `main`.
+
+    The repo's default branch is `master`, and a hardcoded `origin/main` made this
+    script fail on CI with "invalid object name" rather than doing its job. Prefer
+    whatever the remote HEAD actually points at, then the two common names, then
+    let the caller pass --base explicitly.
+    """
+    import subprocess
+
+    def _rev_parse(ref: str) -> bool:
+        return subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                              capture_output=True).returncode == 0
+
+    if _rev_parse("origin/HEAD"):
+        return "origin/HEAD"
+    try:
+        out = subprocess.run(["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+                             capture_output=True, text=True).stdout.strip()
+        if out:
+            return out
+    except OSError:
+        pass
+    for cand in ("origin/main", "origin/master"):
+        if _rev_parse(cand):
+            return cand
+    return "origin/main"
+
+
 def main(argv: list[str]) -> int:
     if "--self-test" in argv:
         return self_test()
-    base, ref, path = "origin/main", "HEAD", DEFAULT_FILE
+    base, ref, path = _default_base(), "HEAD", DEFAULT_FILE
     args = list(argv)
     while args:
         a = args.pop(0)

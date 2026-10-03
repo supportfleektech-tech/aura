@@ -1102,13 +1102,20 @@ class TokenBatcher:
     def __init__(self, min_interval_s: float = 0.04):
         self._min = max(0.0, float(min_interval_s))
         self._buf: list[str] = []
-        self._last = 0.0
+        # None means "never flushed", NOT 0.0. time.monotonic() counts from boot,
+        # so on a host younger than min_interval_s a 0.0 sentinel looks like the
+        # last flush happened *now* and the first token waits out the whole
+        # interval — silently breaking the time-to-first-pixel promise above.
+        # That is not hypothetical: it failed CI on a freshly booted runner, where
+        # a 60s batcher refused to emit its first token at all.
+        self._last: float | None = None
 
     def add(self, tok: str) -> str:
         """Buffer a token. Returns the payload to emit now, or "" to wait."""
         self._buf.append(tok)
-        now = time.monotonic()
-        if self._min <= 0 or (now - self._last) >= self._min:
+        if self._min <= 0 or self._last is None:
+            return self.flush()
+        if (time.monotonic() - self._last) >= self._min:
             return self.flush()
         return ""
 
